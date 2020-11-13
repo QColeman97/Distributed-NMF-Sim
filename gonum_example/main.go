@@ -127,6 +127,10 @@ func main() {
 	// Once again, we have some functions that return scalar values
 	// For example, we can compute the determinant
 	E := A.Slice(0, 3, 0, 3)
+	println("A:")
+	matPrint(A)
+	println("E (slice of A):")
+	matPrint(E)
 	d := mat.Det(E)
 	println("det(E): ", d)
 	// And the trace

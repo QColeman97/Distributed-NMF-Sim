@@ -15,7 +15,8 @@ import (
 // type mat.Matrix is an interface, mat.Dense is a type that conforms to mat.Matrix
 // a mat.Matrix can be cast to only a POINTER of a type mat.Dense, I guess
 //		b/c mat.Dense methods from mat.Matrix have pointer receivers (e.g. func (m *mat.Dense) Dims)
-// matrix receiver must have same dimensions as result of its method (eg. numerRHS)
+// https://stackoverflow.com/questions/40823315/x-does-not-implement-y-method-has-a-pointer-receiver
+// a matrix receiver must have same dimensions as result of its method (eg. numerRHS & Mul)
 
 func matPrint(X mat.Matrix) {
 	fa := mat.Formatted(X, mat.Prefix(""), mat.Squeeze())

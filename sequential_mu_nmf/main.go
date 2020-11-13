@@ -15,7 +15,8 @@ import (
 // type mat.Matrix is an interface, mat.Dense is a type that conforms to mat.Matrix
 // a mat.Matrix can be cast to only a POINTER of a type mat.Dense, I guess
 //		b/c mat.Dense methods from mat.Matrix have pointer receivers (e.g. func (m *mat.Dense) Dims)
-// matrix receiver must have same dimensions as result of its method (eg. numerRHS)
+// https://stackoverflow.com/questions/40823315/x-does-not-implement-y-method-has-a-pointer-receiver
+// a matrix receiver must have same dimensions as result of its method (eg. numerRHS & Mul)
 
 func matPrint(X mat.Matrix) {
 	fa := mat.Formatted(X, mat.Prefix(""), mat.Squeeze())
@@ -24,17 +25,9 @@ func matPrint(X mat.Matrix) {
 
 // Multiplicative Update: H = H * ((Wt @ V) / (Wt @ 1 W @ H))
 func updateH(H *mat.Dense, W *mat.Dense, A *mat.Dense) {
-	// ones := mat.NewDense(m, m, []float64{1, 1, 1, 1, 1, 1, 1, 1, 1})
-
 	update := &mat.Dense{}
 	update.Mul(W.T(), A) // k x n
 
-	// denom1 := &mat.Dense{}
-	// denom1.Mul(W.T(), ones) // k x m
-	// denom2 := &mat.Dense{}
-	// denom2.Mul(denom1, W) // k x k
-	// denom := &mat.Dense{}
-	// denom.Mul(denom2, H) // k x n
 	denom1 := &mat.Dense{}
 	denom1.Mul(W.T(), W) // k x k
 	denom := &mat.Dense{}
@@ -46,17 +39,8 @@ func updateH(H *mat.Dense, W *mat.Dense, A *mat.Dense) {
 
 // Multiplicative Update: W = W * ((V @ Ht) / (W @ H @ 1 @ Ht))
 func updateW(W *mat.Dense, H *mat.Dense, A *mat.Dense) {
-	// ones := mat.NewDense(n, n, []float64{1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1})
-
 	update := &mat.Dense{}
 	update.Mul(A, H.T()) // m x k
-
-	// denom1 := &mat.Dense{}
-	// denom1.Mul(H, ones) // k x n
-	// denom2 := &mat.Dense{}
-	// denom2.Mul(denom1, H.T()) // k x k
-	// denom := &mat.Dense{}
-	// denom.Mul(W, denom2) // m x k
 
 	denom1 := &mat.Dense{}
 	denom1.Mul(H, H.T()) // k x k
@@ -73,8 +57,6 @@ func nmf(W *mat.Dense, H *mat.Dense, A *mat.Dense, maxIter int) (*mat.Dense, *ma
 		updateW(W, H, A)
 		updateH(H, W, A)
 	}
-
-	return W, H
 }
 
 const m, n, k = 3, 4, 2
