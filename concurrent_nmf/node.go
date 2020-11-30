@@ -28,6 +28,8 @@ type Node struct {
 //		every node retrieve U/X from every node
 //		every node performs reduction
 
+// Remember butterfly pattern for all-collectives
+
 // Across all nodes
 func (node *Node) allReduce(smallGramMatrix *mat.Dense) [numNodes]*mat.Dense {
 	var allSmallGramMatrices [numNodes]*mat.Dense

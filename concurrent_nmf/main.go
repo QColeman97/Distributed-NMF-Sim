@@ -14,9 +14,9 @@ func matPrint(X mat.Matrix) {
 }
 
 // MPI-FAUN notation:
-// A = matrix A, a = vector a
-// Ai = ith row block of A, A^i = ith column block of A
-// ai = ith row of A, a^i = ith column of A
+// X = matrix X, x = vector x
+// Xi = ith row block of X, X^i = ith column block of X
+// xi = ith row of X, x^i = ith column of X
 
 func parallelNMF(node *Node, maxIter int) {
 	fmt.Println("TODO fix bug -> Running node ID:", node.nodeID)
