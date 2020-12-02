@@ -30,6 +30,11 @@ type Node struct {
 
 // Remember butterfly pattern for all-collectives
 
+// Ryan
+// For making sure all goroutines are executing the same method at the same time, we need something like MPI_Barrier
+// i.e. "wait here until all coroutines get here"
+// possibly a sync.WaitGroup
+
 // Across all nodes
 func (node *Node) allReduce(smallGramMatrix *mat.Dense) [numNodes]*mat.Dense {
 	var allSmallGramMatrices [numNodes]*mat.Dense

@@ -202,7 +202,8 @@ func main() {
 	chans := makeMatrixChans()
 	var nodes [numNodes]Node
 	for i := 0; i < numNodes; i++ {
-		nodes[i] = makeNode(chans, i, piecesOfA[i])
+		id := i
+		nodes[i] = makeNode(chans, id, piecesOfA[i])
 	}
 
 	// Launch nodes with their A pieces
