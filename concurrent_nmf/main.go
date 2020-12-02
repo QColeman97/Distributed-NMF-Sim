@@ -19,8 +19,6 @@ func matPrint(X mat.Matrix) {
 // xi = ith row of X, x^i = ith column of X
 
 func parallelNMF(node *Node, maxIter int) {
-	fmt.Println("TODO fix bug -> Running node ID:", node.nodeID)
-
 	// aRows, aCols := node.aPiece.Dims()
 	// fmt.Println("Node's A dims:", aRows, aCols)
 
@@ -160,8 +158,8 @@ func partitionAMatrix(A *mat.Dense) []mat.Matrix {
 	return piecesOfA
 }
 
-func makeNode(chans [numNodes]chan mat.Matrix, id int, aPiece mat.Matrix) Node {
-	return Node{
+func makeNode(chans [numNodes]chan *mat.Dense, id int, aPiece mat.Matrix) *Node {
+	return &Node{
 		nodeID:    id,
 		nodeChans: chans,
 		inChan:    chans[id],
@@ -169,10 +167,10 @@ func makeNode(chans [numNodes]chan mat.Matrix, id int, aPiece mat.Matrix) Node {
 	}
 }
 
-func makeMatrixChans() [numNodes]chan mat.Matrix {
-	var chans [numNodes]chan mat.Matrix
+func makeMatrixChans() [numNodes]chan *mat.Dense {
+	var chans [numNodes]chan *mat.Dense
 	for ch := range chans {
-		chans[ch] = make(chan mat.Matrix, 10)
+		chans[ch] = make(chan *mat.Dense, numNodes*2)
 	}
 	return chans
 }
@@ -200,7 +198,7 @@ func main() {
 	piecesOfA := partitionAMatrix(A)
 	// Init nodes
 	chans := makeMatrixChans()
-	var nodes [numNodes]Node
+	var nodes [numNodes]*Node
 	for i := 0; i < numNodes; i++ {
 		id := i
 		nodes[i] = makeNode(chans, id, piecesOfA[i])
@@ -208,9 +206,8 @@ func main() {
 
 	// Launch nodes with their A pieces
 	for _, node := range nodes {
-		fmt.Println("Node:", node.nodeID)
 		wg.Add(1)
-		go parallelNMF(&node, maxIter)
+		go parallelNMF(node, maxIter)
 	}
 
 	// TODO wait for W & H blocks from nodes
