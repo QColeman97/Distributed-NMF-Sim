@@ -22,6 +22,11 @@ func parallelNMF(node *Node, maxIter int) {
 	// aRows, aCols := node.aPiece.Dims()
 	// fmt.Println("Node's A dims:", aRows, aCols)
 
+	// TODO
+	// Synchronize nodes, so no node goes to next collective
+	// until all nodes are done with that collective
+	// Loop over each node & check bool checkpt vars
+
 	// Local matrices
 	var Wij, Hji mat.Dense
 
@@ -48,17 +53,19 @@ func parallelNMF(node *Node, maxIter int) {
 		Uij := &mat.Dense{}
 		Uij.Mul(&Hji, Hji.T()) // k x k
 		// 4)
-		allUs := node.allReduce(Uij)
-		HGramMat := &mat.Dense{} // k x k
-		for i, u := range allUs {
-			if i == 0 {
-				HGramMat = u
-			} else {
-				HGramMat.Add(HGramMat, u)
-			}
-		}
+		HGramMat := node.allReduce(Uij)
+		// allUs := node.allReduce(Uij)
+		// HGramMat := &mat.Dense{} // k x k
+		// for i, u := range allUs {
+		// 	if i == 0 {
+		// 		HGramMat = u
+		// 	} else {
+		// 		HGramMat.Add(HGramMat, u)
+		// 	}
+		// }
 		// 5)
-		Hj := node.allGatherAcrossNodeColumns() // k x (n/p_c)
+		Hj := node.allGatherAcrossNodeColumns(&Hji, hColsPerNode) // k x (n/p_c)
+		// Hj := node.allGatherAcross(false, &Hji) // k x (n/p_c)
 		// 6)
 		Vij := &mat.Dense{}
 		Vij.Mul(node.aPiece, Hj.T()) // (m/pr) x k
@@ -79,17 +86,19 @@ func parallelNMF(node *Node, maxIter int) {
 		Xij := &mat.Dense{}
 		Xij.Mul(Wij.T(), &Wij) // k x k
 		// 10)
-		allXs := node.allReduce(Xij)
-		WGramMat := &mat.Dense{} // k x k
-		for i, x := range allXs {
-			if i == 0 {
-				WGramMat = x
-			} else {
-				WGramMat.Add(WGramMat, x)
-			}
-		}
+		WGramMat := node.allReduce(Xij)
+		// allXs := node.allReduce(Xij)
+		// WGramMat := &mat.Dense{} // k x k
+		// for i, x := range allXs {
+		// 	if i == 0 {
+		// 		WGramMat = x
+		// 	} else {
+		// 		WGramMat.Add(WGramMat, x)
+		// 	}
+		// }
 		// 11)
-		Wi := node.allGatherAcrossNodeRows() // (m/p_r) x k
+		Wi := node.allGatherAcrossNodeRows(&Wij, wRowsPerNode) // (m/p_r) x k
+		// Wi := node.allGatherAcross(true, &Wij) // (m/p_r) x k
 		// 12)
 		Yij := &mat.Dense{}
 		Yij.Mul(Wi.T(), node.aPiece) // k x (n/p_c)
@@ -144,7 +153,7 @@ func updateH(H *mat.Dense, WGramMat *mat.Dense, WProductMatij *mat.Dense) {
 func partitionAMatrix(A *mat.Dense) []mat.Matrix {
 	var piecesOfA []mat.Matrix
 	aRowsPerNode, aColsPerNode := m/nodeRows, n/nodeCols // (m/p_r), (n/p_c)
-	fmt.Println("A rows per node:", aRowsPerNode, "A columns per node:", aColsPerNode)
+	// fmt.Println("A rows per node:", aRowsPerNode, "A columns per node:", aColsPerNode)
 
 	for i := 0; i < nodeRows; i++ {
 		for j := 0; j < nodeCols; j++ {
@@ -158,7 +167,7 @@ func partitionAMatrix(A *mat.Dense) []mat.Matrix {
 	return piecesOfA
 }
 
-func makeNode(chans [numNodes]chan *mat.Dense, id int, aPiece mat.Matrix) *Node {
+func makeNode(chans [numNodes]chan MatMessage, id int, aPiece mat.Matrix) *Node {
 	return &Node{
 		nodeID:    id,
 		nodeChans: chans,
@@ -167,10 +176,10 @@ func makeNode(chans [numNodes]chan *mat.Dense, id int, aPiece mat.Matrix) *Node 
 	}
 }
 
-func makeMatrixChans() [numNodes]chan *mat.Dense {
-	var chans [numNodes]chan *mat.Dense
+func makeMatrixChans() [numNodes]chan MatMessage {
+	var chans [numNodes]chan MatMessage
 	for ch := range chans {
-		chans[ch] = make(chan *mat.Dense, numNodes*2)
+		chans[ch] = make(chan MatMessage, numNodes*2)
 	}
 	return chans
 }
@@ -193,6 +202,8 @@ func main() {
 	fmt.Println("A dims:", aRows, aCols)
 	fmt.Println("W dims:", m, k)
 	fmt.Println("H dims:", k, n)
+	fmt.Println("\nA:")
+	matPrint(A)
 
 	// Partition A into pieces for nodes
 	piecesOfA := partitionAMatrix(A)
@@ -215,4 +226,9 @@ func main() {
 	// TODO construct W & H full matrices
 
 	wg.Wait()
+
+	// approxA := &mat.Dense{}
+	// approxA.Mul(W, H)
+	// fmt.Println("\nA Approximation:")
+	// matPrint(approxA)
 }
