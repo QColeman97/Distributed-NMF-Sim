@@ -472,13 +472,15 @@ func (node *Node) reduceScatterAcrossNodeRows(smallGramMatrix *mat.Dense) *mat.D
 	// Wait until everyone done
 	node.allFinishedAck()
 
-	// scatter gramMat to all others
+	// scatter gramMat to all others evenly
+	vRows := (m / numNodes)
 	for i, ch := range node.nodeChans {
 		if i != node.nodeID {
 			// TODO - fix mem issue
 			// Only send copies of matrix
-			GramMatrixMsg := MatMessage{*gramMat, node.nodeID, reduceScatterType}
-			ch <- GramMatrixMsg
+			sliceToScatter := gramMat[(i * vRows) : ((i + 1) * vRows)]
+			scatterMatrixMsg := MatMessage{*sliceToScatter, node.nodeID, reduceScatterType}
+			ch <- scatterMatrixMsg
 		}
 	}
 	// Wait until everyone done
@@ -486,23 +488,69 @@ func (node *Node) reduceScatterAcrossNodeRows(smallGramMatrix *mat.Dense) *mat.D
 	return gramMat
 }
 
-func (node *Node) reduceScatterAcrossNodeColumns(smallProductMatrix *mat.Dense) [nodeCols]*mat.Dense {
-	var allSmallProductMatrices [nodeCols]*mat.Dense
+func (node *Node) reduceScatterAcrossNodeColumns(smallGramMatrix *mat.Dense) *mat.Dense {
+	// var allSmallGramMatrices [numNodes]*mat.Dense
+	// allSmallGramMatrices[node.nodeID] = smallGramMatrix
+	var allSmallGramMatrices [numNodes]mat.Dense
+	allSmallGramMatrices[node.nodeID] = *smallGramMatrix // fine to keep same mem - local to goroutine
 
-	// yRows, yCols := smallProductMatrix.Dims()
-	yRows, yCols := k, (n / numNodes)
-
-	// temp
-	for i := 0; i < nodeCols; i++ {
-		y := make([]float64, yRows*yCols)
-		for i := range y {
-			y[i] = rand.NormFloat64()
+	// Perform allGather
+	// send my smallGramMatrix to all others
+	for i, ch := range node.nodeChans {
+		if i != node.nodeID {
+			// TODO - fix mem issue
+			// Only send copies of matrix
+			smallGramMatrixMsg := MatMessage{*smallGramMatrix, node.nodeID, allGatherType}
+			ch <- smallGramMatrixMsg
 		}
-		// mat = mat.NewDense(yRows, yCols, y)
-		// allSmallProductMatrices[i] = &mat
-		allSmallProductMatrices[i] = mat.NewDense(yRows, yCols, y)
+	}
+	// Collect all others smallGramMatrices
+	for i := 0; i < numNodes; i++ {
+		if i != node.nodeID {
+			// Block on wait for others
+			for recvSuccess := false; !recvSuccess; {
+				select {
+				case otherMtxMsg := <-node.inChan:
+					if otherMtxMsg.msgType == allGatherType {
+						allSmallGramMatrices[otherMtxMsg.sentID] = otherMtxMsg.mtx
+						recvSuccess = true
+					}
+				default:
+				}
+			}
+		}
+	}
+	// Perform reduce
+	gramMat := &mat.Dense{} // k x k
+	for i, u := range allSmallGramMatrices {
+		if i == 0 {
+			gramMat = &u
+		} else {
+			// uRows, uCols := u.Dims()
+			// gramMatRows, gramMatCols := gramMat.Dims()
+			// fmt.Println(uRows, uCols, "=", gramMatRows, gramMatCols)
+			gramMat.Add(gramMat, &u)
+		}
 	}
 	// Wait until everyone done
 	node.allFinishedAck()
-	return allSmallProductMatrices
+
+	// scatter gramMat to all others evenly
+	yCols := n / numNodes
+	for i, ch := range node.nodeChans {
+		if i != node.nodeID {
+			// TODO - fix mem issue
+			// Only send copies of matrix
+			sliceToScatter := make([][]int, n)
+			rows := make([]int, n*m)
+			for x := 0; x < n; x++ {
+				sliceToScatter[i] = rows[x * yCols : (x + 1) * yCols]
+			}
+			scatterMatrixMsg := MatMessage{sliceToScatter, node.nodeID, reduceScatterType}
+			ch <- scatterMatrixMsg
+		}
+	}
+	// Wait until everyone done
+	node.allFinishedAck()
+	return gramMat
 }
