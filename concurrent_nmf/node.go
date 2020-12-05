@@ -437,91 +437,136 @@ func (node *Node) allGatherAcrossNodeRowsDummy(smallRowBlock *mat.Dense, wRowsPe
 	return mat.NewDense(largeBlockRows, k, x)
 }
 
-// // Only performs across node rows or columns
-// func (node *Node) allGatherAcross(rows bool, smallBlock *mat.Dense) mat.Matrix {
-// 	var allSmallBlocks [nodeCols]*mat.Dense
-// 	allSmallBlocks[node.nodeID] = smallBlock
-
-// 	inBlockIDs := []int{}
-// 	if rows {
-// 		nodeRow := node.nodeID / nodeCols
-// 		// rowIDs := []int{}
-// 		for i := 0; i < numNodes; i++ {
-// 			if (i / nodeCols) == nodeRow {
-// 				// rowIDs = append(rowIDs, i)
-// 				inBlockIDs = append(inBlockIDs, i)
-// 			}
-// 		}
-// 	} else {
-// 		nodeCol := node.nodeID % nodeCols
-// 		// colIDs := []int{}
-// 		for i := 0; i < numNodes; i++ {
-// 			if (i % nodeCols) == nodeCol {
-// 				// colIDs = append(colIDs, i)
-// 				inBlockIDs = append(inBlockIDs, i)
-// 			}
-// 		}
-// 	}
+// func (node *Node) reduceScatterAcrossNodeRows(smallGramMatrix *mat.Dense) *mat.Dense {
+// 	// var allSmallGramMatrices [numNodes]*mat.Dense
+// 	// allSmallGramMatrices[node.nodeID] = smallGramMatrix
+// 	var allSmallGramMatrices [numNodes]mat.Dense
+// 	allSmallGramMatrices[node.nodeID] = *smallGramMatrix // fine to keep same mem - local to goroutine
 
 // 	// Perform allGather
-// 	// send my smallRowBlock to others in my row
-// 	for _, id := range inBlockIDs {
-// 		if id != node.nodeID {
-// 			node.nodeChans[id] <- smallBlock
+// 	// send my smallGramMatrix to all others
+// 	for i, ch := range node.nodeChans {
+// 		if i != node.nodeID {
+// 			// TODO - fix mem issue
+// 			// Only send copies of matrix
+// 			smallGramMatrixMsg := MatMessage{*smallGramMatrix, node.nodeID, allGatherType, node.state}
+// 			ch <- smallGramMatrixMsg
 // 		}
 // 	}
-// 	// Collect from my row others smallRowBlocks
-// 	for _, id := range inBlockIDs {
-// 		if id != node.nodeID {
-// 			select {
-// 			case otherMtx := <-node.inChan:
-// 				allSmallBlocks[id] = otherMtx
-// 			default:
-// 			}
-// 		}
-// 	}
-
-// 	retMatrix := &mat.Dense{}
-// 	if rows {
-// 		wRowsPerNode := m / numNodes // m/p
-// 		// Concatenate allSmallRowBlocks along rows
-// 		numRows := m / nodeRows
-// 		x := make([]float64, numRows*k)
-// 		for i := 0; i < 2; i++ {
-// 			for j := 0; j < wRowsPerNode; j++ {
-// 				for l := 0; l < k; l++ {
-// 					x[i*j*l] = allSmallBlocks[i].At(j, l)
+// 	// Collect all others smallGramMatrices
+// 	for i := 0; i < numNodes; i++ {
+// 		if i != node.nodeID {
+// 			// Block on wait for others
+// 			for recvSuccess := false; !recvSuccess; {
+// 				select {
+// 				case otherMtxMsg := <-node.inChan:
+// 					if otherMtxMsg.msgType == allGatherType {
+// 						allSmallGramMatrices[otherMtxMsg.sentID] = otherMtxMsg.mtx
+// 						recvSuccess = true
+// 					}
+// 				default:
 // 				}
 // 			}
 // 		}
-// 		retMatrix = mat.NewDense(numRows, k, x)
-// 		// return mat.NewDense(numRows, k, x)
-// 	} else {
-// 		hColsPerNode := n / numNodes // n/p
-// 		// Concatenate allSmallRowBlocks along rows
-// 		numCols := n / nodeCols
-// 		x := make([]float64, k*numCols)
-// 		for i := 0; i < 2; i++ {
-// 			for l := 0; l < k; l++ {
-// 				// for j := 0; j < wRowsPerNode; j++ {
-// 				for j := 0; j < hColsPerNode; j++ {
-// 					// for l := 0; l < k; l++ {
-// 					x[i*j*l] = allSmallBlocks[i].At(j, l)
+// 	}
+// 	// Perform reduce
+// 	gramMat := &mat.Dense{} // k x k
+// 	for i, u := range allSmallGramMatrices {
+// 		if i == 0 {
+// 			gramMat = &u
+// 		} else {
+// 			// uRows, uCols := u.Dims()
+// 			// gramMatRows, gramMatCols := gramMat.Dims()
+// 			// fmt.Println(uRows, uCols, "=", gramMatRows, gramMatCols)
+// 			gramMat.Add(gramMat, &u)
+// 		}
+// 	}
+// 	// Wait until everyone done
+// 	node.allFinishedAck()
+
+// 	// scatter gramMat to all others evenly
+// 	vRows := (m / numNodes)
+// 	for i, ch := range node.nodeChans {
+// 		if i != node.nodeID {
+// 			// TODO - fix mem issue
+// 			// Only send copies of matrix
+// 			sliceToScatter := gramMat[(i * vRows):((i + 1) * vRows)]
+// 			scatterMatrixMsg := MatMessage{*sliceToScatter, node.nodeID, reduceScatterType, node.state}
+// 			ch <- scatterMatrixMsg
+// 		}
+// 	}
+
+// 	// Wait until everyone done
+// 	node.allFinishedAck()
+// 	return gramMat
+// }
+
+// func (node *Node) reduceScatterAcrossNodeColumns(smallGramMatrix *mat.Dense) *mat.Dense {
+// 	// var allSmallGramMatrices [numNodes]*mat.Dense
+// 	// allSmallGramMatrices[node.nodeID] = smallGramMatrix
+// 	var allSmallGramMatrices [numNodes]mat.Dense
+// 	allSmallGramMatrices[node.nodeID] = *smallGramMatrix // fine to keep same mem - local to goroutine
+
+// 	// Perform allGather
+// 	// send my smallGramMatrix to all others
+// 	for i, ch := range node.nodeChans {
+// 		if i != node.nodeID {
+// 			// TODO - fix mem issue
+// 			// Only send copies of matrix
+// 			smallGramMatrixMsg := MatMessage{*smallGramMatrix, node.nodeID, allGatherType, node.state}
+// 			ch <- smallGramMatrixMsg
+// 		}
+// 	}
+// 	// Collect all others smallGramMatrices
+// 	for i := 0; i < numNodes; i++ {
+// 		if i != node.nodeID {
+// 			// Block on wait for others
+// 			for recvSuccess := false; !recvSuccess; {
+// 				select {
+// 				case otherMtxMsg := <-node.inChan:
+// 					if otherMtxMsg.msgType == allGatherType {
+// 						allSmallGramMatrices[otherMtxMsg.sentID] = otherMtxMsg.mtx
+// 						recvSuccess = true
+// 					}
+// 				default:
 // 				}
 // 			}
 // 		}
-// 		retMatrix = mat.NewDense(k, numCols, x)
-// 		// return mat.NewDense(k, numCols, x)
+// 	}
+// 	// Perform reduce
+// 	gramMat := &mat.Dense{} // k x k
+// 	for i, u := range allSmallGramMatrices {
+// 		if i == 0 {
+// 			gramMat = &u
+// 		} else {
+// 			// uRows, uCols := u.Dims()
+// 			// gramMatRows, gramMatCols := gramMat.Dims()
+// 			// fmt.Println(uRows, uCols, "=", gramMatRows, gramMatCols)
+// 			gramMat.Add(gramMat, &u)
+// 		}
+// 	}
+// 	// Wait until everyone done
+// 	node.allFinishedAck()
+
+// 	// scatter gramMat to all others evenly
+// 	yCols := n / numNodes
+// 	for i, ch := range node.nodeChans {
+// 		if i != node.nodeID {
+// 			// TODO - fix mem issue
+// 			// Only send copies of matrix
+// 			sliceToScatter := make([][]int, n)
+// 			rows := make([]int, n*m)
+// 			for x := 0; x < n; x++ {
+// 				sliceToScatter[i] = rows[x*yCols : (x+1)*yCols]
+// 			}
+// 			scatterMatrixMsg := MatMessage{sliceToScatter, node.nodeID, reduceScatterType, node.state}
+// 			ch <- scatterMatrixMsg
+// 		}
 // 	}
 
-// 	// temp
-// 	// rows := m / nodeRows
-// 	// x := make([]float64, rows*k)
-// 	// for i := range x {
-// 	// 	x[i] = rand.NormFloat64()
-// 	// }
-// 	// return mat.NewDense(rows, k, x)
-// 	return retMatrix
+// 	// Wait until everyone done
+// 	node.allFinishedAck()
+// 	return gramMat
 // }
 
 func (node *Node) reduceScatterAcrossNodeRows(smallGramMatrix *mat.Dense) *mat.Dense {
