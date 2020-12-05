@@ -6,6 +6,7 @@ import (
 	"gonum.org/v1/gonum/mat"
 )
 
+// MatMessage message types - for synchronization help
 const iAmDoneType = 0
 const allGatherType = 1
 const colGatherType = 2
@@ -16,20 +17,19 @@ type Node struct {
 	nodeID int
 	// nodeChans     [numNodes]chan *mat.Dense // used to be mat.Matrix
 	// inChan        chan *mat.Dense
-	nodeChans         [numNodes]chan MatMessage
-	inChan            chan MatMessage
-	aPiece            mat.Matrix
-	allGatherDone     bool // useless
-	allReduceDone     bool // useless
-	reduceScatterDone bool // useless
+	nodeChans [numNodes]chan MatMessage
+	inChan    chan MatMessage
+	aPiece    mat.Matrix
+	state     int // monotonically increasing state ID - increment after each collective - for synchronization help
 }
 
 // MatMessage - give sender information & expected action along with matrix
 type MatMessage struct {
 	// mtx    *mat.Dense
-	mtx     mat.Dense
-	sentID  int
-	msgType int // 0 = blockForAll, 1 =
+	mtx       mat.Dense
+	sentID    int
+	msgType   int
+	sentState int
 }
 
 // implement MPI collectives
@@ -46,14 +46,61 @@ type MatMessage struct {
 // Remember butterfly pattern for all-collectives
 // Remember - sending a variable thru channel, is giving away that memory (can't use it afterwards - null pointer)
 
-// Like Python all method
-func allDone(eachDone [numNodes]bool) bool {
+// Methods like Python all method
+func allTrue(eachDone [numNodes]bool) bool {
 	for i := 0; i < numNodes; i++ {
 		if !eachDone[i] {
 			return false
 		}
 	}
 	return true
+}
+func allMatricesFilled(eachMatrix [numNodes]mat.Dense) bool {
+	for i := 0; i < numNodes; i++ {
+		if eachMatrix[i].IsEmpty() {
+			return false
+		}
+	}
+	return true
+}
+func allRowMatricesFilled(eachMatrix [nodeCols]mat.Dense) bool {
+	for i := 0; i < nodeCols; i++ {
+		if eachMatrix[i].IsEmpty() {
+			return false
+		}
+	}
+	return true
+}
+func allColMatricesFilled(eachMatrix [nodeRows]mat.Dense) bool {
+	for i := 0; i < nodeRows; i++ {
+		if eachMatrix[i].IsEmpty() {
+			return false
+		}
+	}
+	return true
+}
+
+// Debug prints for allGathers w/in collective methods
+func debugMatricesFilled(eachMatrix [numNodes]mat.Dense) [numNodes]bool {
+	var filled [numNodes]bool
+	for i := 0; i < numNodes; i++ {
+		filled[i] = !eachMatrix[i].IsEmpty()
+	}
+	return filled
+}
+func debugRowMatricesFilled(eachMatrix [nodeCols]mat.Dense) [nodeCols]bool {
+	var filled [nodeCols]bool
+	for i := 0; i < nodeCols; i++ {
+		filled[i] = !eachMatrix[i].IsEmpty()
+	}
+	return filled
+}
+func debugColMatricesFilled(eachMatrix [nodeRows]mat.Dense) [nodeRows]bool {
+	var filled [nodeRows]bool
+	for i := 0; i < nodeRows; i++ {
+		filled[i] = !eachMatrix[i].IsEmpty()
+	}
+	return filled
 }
 
 // Block on all others finish current collective
@@ -62,19 +109,22 @@ func (node *Node) allFinishedAck() {
 	for i, ch := range node.nodeChans {
 		if i != node.nodeID {
 			// Give dummy (unused) matrix
-			finishedMsg := MatMessage{*mat.NewDense(1, 1, []float64{0}), node.nodeID, iAmDoneType}
+			finishedMsg := MatMessage{*mat.NewDense(1, 1, []float64{0}), node.nodeID, iAmDoneType, node.state}
+			// finishedMsg := MatMessage{*mat.NewDense(1, 1, []float64{0}), node.nodeID, iAmDoneType}
 			// finishedMsg := MatMessage{nil, node.nodeID}
 			ch <- finishedMsg
 		}
 	}
 	var eachDone [numNodes]bool
 	eachDone[node.nodeID] = true
-	// Wait until everyone done
-	for !allDone(eachDone) {
+	// Wait until everyone else done
+	for !allTrue(eachDone) {
 		select {
 		case otherMtxMsg := <-node.inChan:
 			// oRows, oCols := otherMtxMsg.mtx.Dims()
-			if otherMtxMsg.sentID != node.nodeID && otherMtxMsg.msgType == iAmDoneType {
+			if otherMtxMsg.msgType == iAmDoneType && otherMtxMsg.sentState == node.state {
+				// if otherMtxMsg.sentID != node.nodeID && otherMtxMsg.msgType == iAmDoneType && otherMtxMsg.sentState == node.state {
+				// if otherMtxMsg.sentID != node.nodeID && otherMtxMsg.msgType == iAmDoneType {
 				// if otherMtxMsg.sentID != node.nodeID &&
 				// 	(otherMtxMsg.mtx.At(0, 0) == 0 && oRows == 1 && oCols == 1) {
 				// if otherMtxMsg.sentID != node.nodeID && otherMtxMsg.mtx == nil {
@@ -83,6 +133,8 @@ func (node *Node) allFinishedAck() {
 		default:
 		}
 	}
+	node.state++
+	// fmt.Println(node.nodeID, "checkpoint")
 }
 
 // TODO - Make sure each node gets COPY of data, like in real dist system
@@ -90,11 +142,19 @@ func (node *Node) allFinishedAck() {
 // Across all nodes
 // func (node *Node) allReduce(smallGramMatrix *mat.Dense) [numNodes]*mat.Dense {
 func (node *Node) allReduce(smallGramMatrix *mat.Dense) *mat.Dense {
+	// fmt.Println(node.nodeID, "["+strconv.Itoa(node.state)+"]", "in allReduce")
+
 	// var allSmallGramMatrices [numNodes]*mat.Dense
 	// allSmallGramMatrices[node.nodeID] = smallGramMatrix
 	// FIX change into array of matrices (copies), not array of ptrs (same matrices)
 	var allSmallGramMatrices [numNodes]mat.Dense
 	allSmallGramMatrices[node.nodeID] = *smallGramMatrix // fine to keep same mem - local to goroutine
+
+	// if node.nodeID == 0 {
+	// 	fmt.Println("Node 0 all matrices:", debugMatricesFilled(allSmallGramMatrices))
+	// 	// fmt.Println("Value of empty matrix:", allSmallGramMatrices[1].At(0, 0))
+	// 	// fmt.Println("Value of full matrix:", allSmallGramMatrices[node.nodeID])
+	// }
 
 	// dummy code
 	// uRows, uCols := smallGramMatrix.Dims()
@@ -106,30 +166,37 @@ func (node *Node) allReduce(smallGramMatrix *mat.Dense) *mat.Dense {
 		if i != node.nodeID {
 			// TODO - fix mem issue
 			// Only send copies of matrix
-			smallGramMatrixMsg := MatMessage{*smallGramMatrix, node.nodeID, allGatherType} // Copies, but we lose pointer, but maybe?
+			smallGramMatrixMsg := MatMessage{*smallGramMatrix, node.nodeID, allGatherType, node.state}
+			// smallGramMatrixMsg := MatMessage{*smallGramMatrix, node.nodeID, allGatherType} // Copies, but we lose pointer, but maybe?
 			// smallGramMatrixMsg := MatMessage{mat.DenseCopyOf(smallGramMatrix), node.nodeID}
 			// smallGramMatrixMsg := MatMessage{smallGramMatrix, node.nodeID}
 			ch <- smallGramMatrixMsg
 		}
 	}
+	// fmt.Println("---", node.nodeID, "["+strconv.Itoa(node.state)+"]", "in allReduce SENT to all others")
+	// ERROR? - not all nodes complete collect others
 	// Collect all others smallGramMatrices
-	for i := 0; i < numNodes; i++ {
-		if i != node.nodeID {
-			// Block on wait for others
-			for recvSuccess := false; !recvSuccess; {
-				select {
-				case otherMtxMsg := <-node.inChan:
-					// if node.nodeID == 1 {
-					// 	fmt.Println("Node 1 got u from", i)
-					// }
-					// Safety check
-					if otherMtxMsg.msgType == allGatherType {
-						allSmallGramMatrices[otherMtxMsg.sentID] = otherMtxMsg.mtx
-						recvSuccess = true
-					}
-				default:
-				}
+	// Error -> don't go through each node, b/c if not in order, will just ignore it - never place it in
+
+	// Block on wait for others
+	for !allMatricesFilled(allSmallGramMatrices) {
+		select {
+		case otherMtxMsg := <-node.inChan:
+			// if node.nodeID == 1 {
+			// 	fmt.Println("Node 1 got u from", i)
+			// }
+			// Safety check
+			if otherMtxMsg.msgType == allGatherType && otherMtxMsg.sentState == node.state {
+				// if otherMtxMsg.msgType == allGatherType && otherMtxMsg.sentState == node.state {
+				// if otherMtxMsg.sentID != node.nodeID && otherMtxMsg.msgType == allGatherType &&
+				// 	otherMtxMsg.sentState == node.state {
+				// if otherMtxMsg.msgType == allGatherType {
+				allSmallGramMatrices[otherMtxMsg.sentID] = otherMtxMsg.mtx
+				// if node.nodeID == 0 {
+				// 	fmt.Println("Node 0 all matrices:", debugMatricesFilled(allSmallGramMatrices))
+				// }
 			}
+		default:
 		}
 
 		// dummy code
@@ -139,6 +206,7 @@ func (node *Node) allReduce(smallGramMatrix *mat.Dense) *mat.Dense {
 		// }
 		// allSmallGramMatrices[i] = mat.NewDense(uRows, uCols, x)
 	}
+	// fmt.Println("---", node.nodeID, "["+strconv.Itoa(node.state)+"]", "in allReduce GOT from all others")
 	// return allSmallGramMatrices
 
 	// Perform reduce
@@ -153,17 +221,21 @@ func (node *Node) allReduce(smallGramMatrix *mat.Dense) *mat.Dense {
 			gramMat.Add(gramMat, &u)
 		}
 	}
-	// Wait until everyone done
+
+	// Wait until everyone done, replace below with barrier?
 	node.allFinishedAck()
+	// fmt.Println("---", node.nodeID, "["+strconv.Itoa(node.state)+"]", "in allReduce ALL NODES DONE")
 	return gramMat
 }
 
 // Combine these 2 methods into 1?
 func (node *Node) allGatherAcrossNodeColumns(smallColumnBlock *mat.Dense, hColsPerNode int) mat.Matrix {
+	// fmt.Println(node.nodeID, "in allGatherCol")
+
 	// var allSmallColBlocks [nodeRows]*mat.Dense
 	// thisSmallBlockIndex := node.nodeID / nodeCols
 	// allSmallColBlocks[thisSmallBlockIndex] = smallColumnBlock
-	// FIX change into array of matrices (copies), not array of ptrs (same matrices)
+	// FIX changed into array of matrices (copies), not array of ptrs (same matrices)
 	var allSmallColBlocks [nodeRows]mat.Dense
 	thisSmallBlockIndex := node.nodeID / nodeCols
 	allSmallColBlocks[thisSmallBlockIndex] = *smallColumnBlock
@@ -187,12 +259,13 @@ func (node *Node) allGatherAcrossNodeColumns(smallColumnBlock *mat.Dense, hColsP
 			colIDsIdx++
 		}
 	}
+
 	// fmt.Println("Node", node.nodeID, "column IDs:", colIDs)
 	// Perform allGather
 	// send my smallColumnBlock to others in my column
 	for _, id := range colIDs {
 		if id != node.nodeID {
-			smallColumnBlockMsg := MatMessage{*smallColumnBlock, node.nodeID, colGatherType}
+			smallColumnBlockMsg := MatMessage{*smallColumnBlock, node.nodeID, colGatherType, node.state}
 			// smallColumnBlockMsg := MatMessage{mat.DenseCopyOf(smallColumnBlock), node.nodeID}
 			node.nodeChans[id] <- smallColumnBlockMsg
 		}
@@ -200,21 +273,22 @@ func (node *Node) allGatherAcrossNodeColumns(smallColumnBlock *mat.Dense, hColsP
 	// Collect from my column others smallColumnBlocks
 	// for _, id := range colIDs {
 	// ERROR - exiting loop before ALL column-blocks have been gathered
-	for i := 0; i < (nodeRows - 1); i++ {
+	// Block on wait for others
+	for !allColMatricesFilled(allSmallColBlocks) {
+		// for i := 0; i < (nodeRows - 1); i++ {
 		// if id != node.nodeID {
-		// Block on wait for others
-		for recvSuccess := false; !recvSuccess; {
-			select {
-			case otherMtxMsg := <-node.inChan:
-				// Safety check
-				if otherMtxMsg.msgType == colGatherType {
-					thisSmallBlockIndex = otherMtxMsg.sentID / nodeCols
-					allSmallColBlocks[thisSmallBlockIndex] = otherMtxMsg.mtx
-					recvSuccess = true
-				}
-			default:
+		// for recvSuccess := false; !recvSuccess; {
+		select {
+		case otherMtxMsg := <-node.inChan:
+			// Safety check
+			if otherMtxMsg.msgType == colGatherType && otherMtxMsg.sentState == node.state {
+				thisSmallBlockIndex = otherMtxMsg.sentID / nodeCols
+				allSmallColBlocks[thisSmallBlockIndex] = otherMtxMsg.mtx
+				// recvSuccess = true
 			}
+		default:
 		}
+		// }
 		// }
 	}
 	// fmt.Println("\nNode", node.nodeID, "All (other) Small Col Blocks After Gather:")
@@ -242,20 +316,29 @@ func (node *Node) allGatherAcrossNodeColumns(smallColumnBlock *mat.Dense, hColsP
 		}
 	}
 
-	// temp
-	// cols := n / nodeCols
-	// x := make([]float64, k*cols)
-	// for i := range x {
-	// 	x[i] = rand.NormFloat64()
-	// }
-
 	// Wait until everyone done
 	node.allFinishedAck()
 	return mat.NewDense(k, largeBlockCols, x)
 }
 
+func (node *Node) allGatherAcrossNodeColumnsDummy(smallColumnBlock *mat.Dense, hColsPerNode int) mat.Matrix {
+	// fmt.Println(node.nodeID, "["+strconv.Itoa(node.state)+"]in allGatherCol")
+
+	largeBlockCols := n / nodeCols
+	x := make([]float64, k*largeBlockCols)
+	for i := range x {
+		x[i] = rand.NormFloat64()
+	}
+	// Wait until everyone done
+	node.allFinishedAck()
+	// fmt.Println(node.nodeID, "in allGatherCol ALL done!")
+	return mat.NewDense(k, largeBlockCols, x)
+}
+
 // Within W row blocks
 func (node *Node) allGatherAcrossNodeRows(smallRowBlock *mat.Dense, wRowsPerNode int) mat.Matrix {
+	// fmt.Println(node.nodeID, "in allGatherRow")
+
 	// var allSmallRowBlocks [nodeCols]*mat.Dense
 	// thisSmallBlockIndex := node.nodeID % nodeCols
 	// allSmallRowBlocks[thisSmallBlockIndex] = smallRowBlock
@@ -284,28 +367,29 @@ func (node *Node) allGatherAcrossNodeRows(smallRowBlock *mat.Dense, wRowsPerNode
 	// send my smallRowBlock to others in my row
 	for _, id := range rowIDs {
 		if id != node.nodeID {
-			smallRowBlockMsg := MatMessage{*smallRowBlock, node.nodeID, rowGatherType}
+			smallRowBlockMsg := MatMessage{*smallRowBlock, node.nodeID, rowGatherType, node.state}
 			// smallRowBlockMsg := MatMessage{mat.DenseCopyOf(smallRowBlock), node.nodeID}
 			node.nodeChans[id] <- smallRowBlockMsg
 		}
 	}
 	// Collect from my row others smallRowBlocks
 	// for _, id := range rowIDs {
-	for i := 0; i < (nodeCols - 1); i++ {
+	// Block on wait for others
+	for !allRowMatricesFilled(allSmallRowBlocks) {
+		// for i := 0; i < (nodeCols - 1); i++ {
 		// if id != node.nodeID {
-		// Block on wait for others
-		for recvSuccess := false; !recvSuccess; {
-			select {
-			case otherMtxMsg := <-node.inChan:
-				// Safety check
-				if otherMtxMsg.msgType == rowGatherType {
-					thisSmallBlockIndex = otherMtxMsg.sentID % nodeCols
-					allSmallRowBlocks[thisSmallBlockIndex] = otherMtxMsg.mtx
-					recvSuccess = true
-				}
-			default:
+		// for recvSuccess := false; !recvSuccess; {
+		select {
+		case otherMtxMsg := <-node.inChan:
+			// Safety check
+			if otherMtxMsg.msgType == rowGatherType && otherMtxMsg.sentState == node.state {
+				thisSmallBlockIndex = otherMtxMsg.sentID % nodeCols
+				allSmallRowBlocks[thisSmallBlockIndex] = otherMtxMsg.mtx
+				// recvSuccess = true
 			}
+		default:
 		}
+		// }
 		// }
 	}
 
@@ -335,6 +419,20 @@ func (node *Node) allGatherAcrossNodeRows(smallRowBlock *mat.Dense, wRowsPerNode
 
 	// Wait until everyone done
 	node.allFinishedAck()
+	return mat.NewDense(largeBlockRows, k, x)
+}
+
+func (node *Node) allGatherAcrossNodeRowsDummy(smallRowBlock *mat.Dense, wRowsPerNode int) mat.Matrix {
+	// fmt.Println(node.nodeID, "["+strconv.Itoa(node.state)+"]in allGatherRow")
+
+	largeBlockRows := m / nodeRows
+	x := make([]float64, largeBlockRows*k)
+	for i := range x {
+		x[i] = rand.NormFloat64()
+	}
+	// Wait until everyone done
+	node.allFinishedAck()
+	// fmt.Println(node.nodeID, "in allGatherRow ALL done!")
 	return mat.NewDense(largeBlockRows, k, x)
 }
 
@@ -426,44 +524,30 @@ func (node *Node) allGatherAcrossNodeRows(smallRowBlock *mat.Dense, wRowsPerNode
 // }
 
 // Combine these 2 methods into 1?
-func (node *Node) reduceScatterAcrossNodeRows(smallProductMatrix *mat.Dense) [nodeRows]*mat.Dense {
-	var allSmallProductMatrices [nodeRows]*mat.Dense
-
-	// vRows, vCols := smallProductMatrix.Dims()
-	vRows, vCols := (m / numNodes), k
-
-	// temp
-	for i := 0; i < nodeRows; i++ {
-		x := make([]float64, vRows*vCols)
-		for i := range x {
-			x[i] = rand.NormFloat64()
-		}
-		// mat = mat.NewDense(vRows, vCols, x)
-		// allSmallProductMatrices[i] = &mat
-		allSmallProductMatrices[i] = mat.NewDense(vRows, vCols, x)
+func (node *Node) reduceScatterAcrossNodeRowsDummy(smallProductMatrix *mat.Dense) *mat.Dense {
+	// fmt.Println(node.nodeID, "["+strconv.Itoa(node.state)+"]in reduceScatterRow")
+	smallBlockRows := m / numNodes
+	x := make([]float64, smallBlockRows*k)
+	for i := range x {
+		x[i] = rand.NormFloat64()
 	}
+
 	// Wait until everyone done
 	node.allFinishedAck()
-	return allSmallProductMatrices
+	// fmt.Println(node.nodeID, "in reduceScatterRow ALL done!")
+	return mat.NewDense(smallBlockRows, k, x)
 }
 
-func (node *Node) reduceScatterAcrossNodeColumns(smallProductMatrix *mat.Dense) [nodeCols]*mat.Dense {
-	var allSmallProductMatrices [nodeCols]*mat.Dense
-
-	// yRows, yCols := smallProductMatrix.Dims()
-	yRows, yCols := k, (n / numNodes)
-
-	// temp
-	for i := 0; i < nodeCols; i++ {
-		y := make([]float64, yRows*yCols)
-		for i := range y {
-			y[i] = rand.NormFloat64()
-		}
-		// mat = mat.NewDense(yRows, yCols, y)
-		// allSmallProductMatrices[i] = &mat
-		allSmallProductMatrices[i] = mat.NewDense(yRows, yCols, y)
+func (node *Node) reduceScatterAcrossNodeColumnsDummy(smallProductMatrix *mat.Dense) *mat.Dense {
+	// fmt.Println(node.nodeID, "["+strconv.Itoa(node.state)+"]in reduceScatterRow")
+	smallBlockCols := n / numNodes
+	x := make([]float64, k*smallBlockCols)
+	for i := range x {
+		x[i] = rand.NormFloat64()
 	}
+
 	// Wait until everyone done
 	node.allFinishedAck()
-	return allSmallProductMatrices
+	// fmt.Println(node.nodeID, "in reduceScatterCol ALL done!")
+	return mat.NewDense(k, smallBlockCols, x)
 }

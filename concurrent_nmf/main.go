@@ -19,9 +19,6 @@ func matPrint(X mat.Matrix) {
 // xi = ith row of X, x^i = ith column of X
 
 func parallelNMF(node *Node, maxIter int) {
-	// aRows, aCols := node.aPiece.Dims()
-	// fmt.Println("Node's A dims:", aRows, aCols)
-
 	// TODO
 	// Synchronize nodes, so no node goes to next collective
 	// until all nodes are done with that collective
@@ -48,72 +45,45 @@ func parallelNMF(node *Node, maxIter int) {
 	Wij = *mat.NewDense(wRowsPerNode, k, w)
 
 	for iter := 0; iter < maxIter; iter++ {
-		// Update W
+		// fmt.Println(node.nodeID, "ITER #", iter+1)
+		// Update W below
 		// 3)
 		Uij := &mat.Dense{}
 		Uij.Mul(&Hji, Hji.T()) // k x k
 		// 4)
 		HGramMat := node.allReduce(Uij)
-		// allUs := node.allReduce(Uij)
-		// HGramMat := &mat.Dense{} // k x k
-		// for i, u := range allUs {
-		// 	if i == 0 {
-		// 		HGramMat = u
-		// 	} else {
-		// 		HGramMat.Add(HGramMat, u)
-		// 	}
-		// }
+		// fmt.Println(node.nodeID, "did allReduce")
 		// 5)
 		Hj := node.allGatherAcrossNodeColumns(&Hji, hColsPerNode) // k x (n/p_c)
-		// Hj := node.allGatherAcross(false, &Hji) // k x (n/p_c)
+		// fmt.Println(node.nodeID, "did allGatherCols")
 		// 6)
 		Vij := &mat.Dense{}
 		Vij.Mul(node.aPiece, Hj.T()) // (m/pr) x k
 		// 7)
-		allVs := node.reduceScatterAcrossNodeRows(Vij)
-		HProductMatij := &mat.Dense{} // (m/p) x k
-		for i, v := range allVs {
-			if i == 0 {
-				HProductMatij = v
-			} else {
-				HProductMatij.Add(HProductMatij, v)
-			}
-		}
+		HProductMatij := node.reduceScatterAcrossNodeRowsDummy(Vij)
+		// fmt.Println(node.nodeID, "did reduceScatterRow")
 		// 8)
 		updateW(&Wij, HGramMat, HProductMatij)
-		// Update H
+		// fmt.Println(node.nodeID, "updated W")
+		// Update H below
 		// 9)
 		Xij := &mat.Dense{}
 		Xij.Mul(Wij.T(), &Wij) // k x k
 		// 10)
 		WGramMat := node.allReduce(Xij)
-		// allXs := node.allReduce(Xij)
-		// WGramMat := &mat.Dense{} // k x k
-		// for i, x := range allXs {
-		// 	if i == 0 {
-		// 		WGramMat = x
-		// 	} else {
-		// 		WGramMat.Add(WGramMat, x)
-		// 	}
-		// }
+		// fmt.Println(node.nodeID, "did allReduce")
 		// 11)
 		Wi := node.allGatherAcrossNodeRows(&Wij, wRowsPerNode) // (m/p_r) x k
-		// Wi := node.allGatherAcross(true, &Wij) // (m/p_r) x k
+		// fmt.Println(node.nodeID, "did allGatherRows")
 		// 12)
 		Yij := &mat.Dense{}
 		Yij.Mul(Wi.T(), node.aPiece) // k x (n/p_c)
 		// 13)
-		allYs := node.reduceScatterAcrossNodeColumns(Yij)
-		WProductMatij := &mat.Dense{} // k x (n/p)
-		for i, y := range allYs {
-			if i == 0 {
-				WProductMatij = y
-			} else {
-				WProductMatij.Add(WProductMatij, y)
-			}
-		}
+		WProductMatij := node.reduceScatterAcrossNodeColumnsDummy(Yij)
+		// fmt.Println(node.nodeID, "did reduceScatterCols")
 		// 14)
 		updateH(&Hji, WGramMat, WProductMatij)
+		// fmt.Println(node.nodeID, "updated H")
 	}
 
 	// TODO Send Wij & Hji to client
@@ -179,7 +149,7 @@ func makeNode(chans [numNodes]chan MatMessage, id int, aPiece mat.Matrix) *Node 
 func makeMatrixChans() [numNodes]chan MatMessage {
 	var chans [numNodes]chan MatMessage
 	for ch := range chans {
-		chans[ch] = make(chan MatMessage, numNodes*2)
+		chans[ch] = make(chan MatMessage, numNodes*2) // numNodes-1)
 	}
 	return chans
 }
@@ -231,4 +201,5 @@ func main() {
 	// approxA.Mul(W, H)
 	// fmt.Println("\nA Approximation:")
 	// matPrint(approxA)
+	fmt.Println("Done")
 }
