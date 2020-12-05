@@ -11,6 +11,7 @@ const iAmDoneType = 0
 const allGatherType = 1
 const colGatherType = 2
 const rowGatherType = 3
+const reduceScatterType = 4
 
 // Node - has info each goroutine needs
 type Node struct {
