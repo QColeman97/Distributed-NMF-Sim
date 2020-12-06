@@ -18,7 +18,8 @@ func matPrint(X mat.Matrix) {
 // Xi = ith row block of X, X^i = ith column block of X
 // xi = ith row of X, x^i = ith column of X
 
-func parallelNMF(node *Node, maxIter int) {
+func parallelNMF(node *Node, maxIter int) (mat.Dense, mat.Dense) {
+	defer wg.Done()
 	// TODO
 	// Synchronize nodes, so no node goes to next collective
 	// until all nodes are done with that collective
@@ -60,7 +61,7 @@ func parallelNMF(node *Node, maxIter int) {
 		Vij := &mat.Dense{}
 		Vij.Mul(node.aPiece, Hj.T()) // (m/pr) x k
 		// 7)
-		HProductMatij := node.reduceScatterAcrossNodeRowsDummy(Vij)
+		HProductMatij := node.newReduceScatterAcrossNodeRows(Vij)
 		// fmt.Println(node.nodeID, "did reduceScatterRow")
 		// 8)
 		updateW(&Wij, HGramMat, HProductMatij)
@@ -79,7 +80,7 @@ func parallelNMF(node *Node, maxIter int) {
 		Yij := &mat.Dense{}
 		Yij.Mul(Wi.T(), node.aPiece) // k x (n/p_c)
 		// 13)
-		WProductMatij := node.reduceScatterAcrossNodeColumnsDummy(Yij)
+		WProductMatij := node.newReduceScatterAcrossNodeColumns(Yij)
 		// fmt.Println(node.nodeID, "did reduceScatterCols")
 		// 14)
 		updateH(&Hji, WGramMat, WProductMatij)
@@ -87,13 +88,13 @@ func parallelNMF(node *Node, maxIter int) {
 	}
 
 	// TODO Send Wij & Hji to client
-	wg.Done()
+	return Wij, Hji
 }
 
 // Line 8 of MPI-FAUN
 // Multiplicative Update: W = W * ((A @ Ht) / (W @ (H @ Ht)))
 // Formula uses: Gram matrix, matrix product w/ A, and W
-func updateW(W *mat.Dense, HGramMat *mat.Dense, HProductMatij *mat.Dense) {
+func updateW(W *mat.Dense, HGramMat *mat.Dense, HProductMatij mat.Matrix) {
 	// W dims = (m/p) x k
 	// HGramMat dims = k x k
 	// HProductMatij dims = (m/p) x k
@@ -108,7 +109,7 @@ func updateW(W *mat.Dense, HGramMat *mat.Dense, HProductMatij *mat.Dense) {
 // Line 14 of MPI-FAUN
 // Multiplicative Update: H = H * ((Wt @ A) / ((Wt @ W) @ H))
 // Formula uses: Gram matrix, matrix product w/ A, and H
-func updateH(H *mat.Dense, WGramMat *mat.Dense, WProductMatij *mat.Dense) {
+func updateH(H *mat.Dense, WGramMat *mat.Dense, WProductMatij mat.Matrix) {
 	// H dims = k x (n/p)
 	// WGramMat dims = k x k
 	// WProductMatij dims = k x (n/p)

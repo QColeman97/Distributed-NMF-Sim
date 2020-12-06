@@ -631,6 +631,70 @@ func (node *Node) allGatherAcrossNodeRowsDummy(smallRowBlock *mat.Dense, wRowsPe
 	return mat.NewDense(largeBlockRows, k, x)
 }
 
+func (node *Node) newReduceScatterAcrossNodeRows(smallRowBlock *mat.Dense) mat.Matrix {
+	// Only concerned w/ nodes in same row
+	thisRow := node.nodeID / nodeCols
+	rowIDs := make([]int, nodeCols)
+	rowIDsIdx := 0
+	for i := 0; i < numNodes; i++ {
+		if (i / nodeCols) == thisRow {
+			rowIDs[rowIDsIdx] = i
+			rowIDsIdx++
+		}
+	}
+
+	// send out my part (send to all for synchronization)
+	for i, c := range node.nodeChans {
+		if i != node.nodeID {
+			c <- MatMessage{
+				mtx:    *smallRowBlock,
+				sentID: node.nodeID,
+			}
+		}
+	}
+
+	parts := make([]mat.Dense, nodeCols)
+	thisSmallBlockIndex := node.nodeID % nodeCols
+	parts[thisSmallBlockIndex] = *smallRowBlock
+
+	// get parts from each other node (only record if node in same row)
+	done := 1
+	for done < numNodes {
+		next := <-node.inChan
+		if in(rowIDs, next.sentID) {
+			thisSmallBlockIndex := next.sentID % nodeCols
+			parts[thisSmallBlockIndex] = next.mtx
+		}
+		node.nodeAks[next.sentID] <- true
+		done++
+	}
+
+	// put those parts together
+	reduceProduct := node.localReduce(parts)
+
+	// scatter reduceProduct to others in row evenly
+	ret := reduceProduct.Slice(thisSmallBlockIndex*smallBlockSizeW, (thisSmallBlockIndex+1)*smallBlockSizeW, 0, k)
+
+	// vRows, vCols := (m / numNodes), k
+	// for i, ch := range node.nodeChans {
+	// 	if i != node.nodeID {
+	// 		// TODO - fix mem issue
+	// 		// Only send copies of matrix
+	// 		sliceToScatter := reduceProduct.Slice(i*vRows, (i+1)*vRows, 0, vCols)
+	// 		message := mat.DenseCopyOf(sliceToScatter)
+	// 		scatterMatrixMsg := MatMessage{*message, node.nodeID, reduceScatterType, node.state}
+	// 		ch <- scatterMatrixMsg
+	// 	}
+	// }
+
+	// wait for all others to have received my matrix
+	for i := 0; i < numNodes-1; i++ {
+		<-node.aks
+	}
+
+	return ret
+}
+
 func (node *Node) reduceScatterAcrossNodeRows(smallGramMatrix *mat.Dense) *mat.Dense {
 	var allSmallGramMatrices [numNodes]mat.Dense
 	allSmallGramMatrices[node.nodeID] = *smallGramMatrix // fine to keep same mem - local to goroutine
@@ -689,6 +753,59 @@ func (node *Node) reduceScatterAcrossNodeRows(smallGramMatrix *mat.Dense) *mat.D
 	// Wait until everyone done
 	node.allFinishedAck()
 	return gramMat
+}
+
+func (node *Node) newReduceScatterAcrossNodeColumns(smallColumnBlock *mat.Dense) mat.Matrix {
+	// Only concerned w/ nodes in same column
+	thisCol := node.nodeID % nodeCols
+	colIDs := make([]int, nodeRows)
+	colIDsIdx := 0
+	for i := 0; i < numNodes; i++ {
+		if (i % nodeCols) == thisCol {
+			colIDs[colIDsIdx] = i
+			colIDsIdx++
+		}
+	}
+
+	// send out my part (send to all for synchronization)
+	for i, c := range node.nodeChans {
+		if i != node.nodeID {
+			c <- MatMessage{
+				mtx:    *smallColumnBlock,
+				sentID: node.nodeID,
+			}
+		}
+	}
+
+	parts := make([]mat.Dense, nodeRows)
+	thisSmallBlockIndex := node.nodeID / nodeCols
+	parts[thisSmallBlockIndex] = *smallColumnBlock
+
+	// get parts from each other node (only record if node in same column)
+	done := 1
+	for done < numNodes {
+		// for done < nodeRows {
+		next := <-node.inChan
+		if in(colIDs, next.sentID) {
+			thisSmallBlockIndex := next.sentID / nodeCols
+			parts[thisSmallBlockIndex] = next.mtx
+		}
+		node.nodeAks[next.sentID] <- true
+		done++
+	}
+
+	// put those parts together
+	reduceProduct := node.localReduce(parts)
+
+	// scatter reduceProduct to others in row evenly
+	ret := reduceProduct.Slice(0, k, thisSmallBlockIndex*smallBlockSizeH, (thisSmallBlockIndex+1)*smallBlockSizeH)
+
+	// wait for all others to have received my matrix
+	for i := 0; i < numNodes-1; i++ {
+		<-node.aks
+	}
+
+	return ret
 }
 
 func (node *Node) reduceScatterAcrossNodeColumns(smallGramMatrix *mat.Dense) *mat.Dense {
