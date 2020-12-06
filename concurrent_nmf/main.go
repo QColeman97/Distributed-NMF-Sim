@@ -173,6 +173,14 @@ const largeBlockSizeH = n / nodeCols
 const smallBlockSizeW = m / numNodes
 const smallBlockSizeH = n / numNodes
 
+func debugMatricesFilled(eachMatrix []mat.Dense) [numNodes]bool {
+	var filled [numNodes]bool
+	for i := 0; i < numNodes; i++ {
+		filled[i] = !eachMatrix[i].IsEmpty()
+	}
+	return filled
+}
+
 func main() {
 	maxIter := 100
 
@@ -209,7 +217,7 @@ func main() {
 
 	// Wait for W & H blocks from nodes
 	wPieces, hPieces := make([]mat.Dense, numNodes), make([]mat.Dense, numNodes)
-	for w, h := 0, 0; w < numNodes && h < numNodes; {
+	for w, h := 0, 0; w < numNodes || h < numNodes; {
 		next := <-clientChan
 		if next.isFinalW {
 			wPieces[next.sentID] = next.mtx
@@ -224,8 +232,6 @@ func main() {
 	// Construct full W matrix
 	w := make([]float64, m*k)
 	for i := 0; i < numNodes; i++ {
-		wPieceRows, wPieceCols := wPieces[i].Dims()
-		fmt.Println("W Piece Dims:", wPieceRows, wPieceCols)
 		for j := 0; j < smallBlockSizeW; j++ {
 			for l := 0; l < k; l++ {
 				w[i*j*l] = wPieces[i].At(j, l)
@@ -238,8 +244,6 @@ func main() {
 	h := make([]float64, k*n)
 	for j := 0; j < k; j++ {
 		for i := 0; i < numNodes; i++ {
-			hPieceRows, hPieceCols := hPieces[i].Dims()
-			fmt.Println("H Piece Dims:", hPieceRows, hPieceCols)
 			for l := 0; l < smallBlockSizeH; l++ {
 				h[i*j*l] = hPieces[i].At(j, l)
 			}
@@ -247,9 +251,14 @@ func main() {
 	}
 	H := mat.NewDense(k, n, h)
 
+	fmt.Println("\nW:")
+	matPrint(W)
+	fmt.Println("\nH:")
+	matPrint(H)
+
 	approxA := &mat.Dense{}
 	approxA.Mul(W, H)
 	fmt.Println("\nA Approximation:")
 	matPrint(approxA)
-	fmt.Println("Done")
+	// fmt.Println("Done")
 }
