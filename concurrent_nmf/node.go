@@ -1,7 +1,6 @@
 package main
 
 import (
-	"fmt"
 	"math/rand"
 
 	"gonum.org/v1/gonum/mat"
@@ -49,6 +48,16 @@ type MatMessage struct {
 
 // Remember - sending a variable thru channel, is giving away that memory (can't use it afterwards - null pointer)
 
+// Utility Functions
+func in(slice []int, val int) bool {
+	for _, item := range slice {
+		if item == val {
+			return true
+		}
+	}
+	return false
+}
+
 // Methods like Python all method
 func allTrue(eachDone [numNodes]bool) bool {
 	for i := 0; i < numNodes; i++ {
@@ -84,28 +93,28 @@ func allColMatricesFilled(eachMatrix [nodeRows]mat.Dense) bool {
 }
 
 // Debug prints for allGathers w/in collective methods
-func debugMatricesFilledV2(eachMatrix []mat.Dense) [numNodes]bool {
+// func debugMatricesFilledV2(eachMatrix []mat.Dense) [numNodes]bool {
+// 	var filled [numNodes]bool
+// 	for i := 0; i < numNodes; i++ {
+// 		filled[i] = !eachMatrix[i].IsEmpty()
+// 	}
+// 	return filled
+// }
+func debugMatricesFilled(eachMatrix []mat.Dense) [numNodes]bool {
 	var filled [numNodes]bool
 	for i := 0; i < numNodes; i++ {
 		filled[i] = !eachMatrix[i].IsEmpty()
 	}
 	return filled
 }
-func debugMatricesFilled(eachMatrix [numNodes]mat.Dense) [numNodes]bool {
-	var filled [numNodes]bool
-	for i := 0; i < numNodes; i++ {
-		filled[i] = !eachMatrix[i].IsEmpty()
-	}
-	return filled
-}
-func debugRowMatricesFilled(eachMatrix [nodeCols]mat.Dense) [nodeCols]bool {
+func debugRowMatricesFilled(eachMatrix []mat.Dense) [nodeCols]bool {
 	var filled [nodeCols]bool
 	for i := 0; i < nodeCols; i++ {
 		filled[i] = !eachMatrix[i].IsEmpty()
 	}
 	return filled
 }
-func debugColMatricesFilled(eachMatrix [nodeRows]mat.Dense) [nodeRows]bool {
+func debugColMatricesFilled(eachMatrix []mat.Dense) [nodeRows]bool {
 	var filled [nodeRows]bool
 	for i := 0; i < nodeRows; i++ {
 		filled[i] = !eachMatrix[i].IsEmpty()
@@ -147,19 +156,9 @@ func (node *Node) allFinishedAck() {
 	// fmt.Println(node.nodeID, "checkpoint")
 }
 
-// TODO - Make sure each node gets COPY of data, like in real dist system
-
 func (node *Node) localReduce(parts []mat.Dense) mat.Dense {
 	start := parts[0]
-	if node.nodeID == 0 {
-		startRows, startCols := start.Dims()
-		fmt.Println("Start rows, start cols:", startRows, startCols)
-	}
 	for i := 1; i < len(parts); i++ {
-		if node.nodeID == 0 {
-			nextRows, nextCols := parts[i].Dims()
-			fmt.Println("Next rows, next cols:", nextRows, nextCols)
-		}
 		start.Add(&start, &parts[i])
 	}
 	return start
@@ -188,10 +187,6 @@ func (node *Node) newAllReduce(part *mat.Dense) *mat.Dense {
 		parts[next.sentID] = next.mtx
 		node.nodeAks[next.sentID] <- true
 		done++
-	}
-
-	if node.nodeID == 0 {
-		fmt.Println("Parts (filled or not):", debugMatricesFilledV2(parts))
 	}
 
 	// put those parts together
@@ -292,6 +287,89 @@ func (node *Node) allReduce(smallGramMatrix *mat.Dense) *mat.Dense {
 	node.allFinishedAck()
 	// fmt.Println("---", node.nodeID, "["+strconv.Itoa(node.state)+"]", "in allReduce ALL NODES DONE")
 	return gramMat
+}
+
+func (node *Node) localConcatenateColWise(parts []mat.Dense, colsPerNode int) mat.Dense {
+	// Perform concatenate allSmallColBlocks column-wise
+	largeBlockCols := n / nodeCols
+	x := make([]float64, k*largeBlockCols)
+	for j := 0; j < k; j++ {
+		for i := 0; i < nodeRows; i++ {
+			for l := 0; l < colsPerNode; l++ {
+				x[i*j*l] = parts[i].At(j, l)
+			}
+		}
+	}
+
+	return *mat.NewDense(k, largeBlockCols, x)
+}
+
+func (node *Node) localConcatenateRowWise(parts []mat.Dense, rowsPerNode int) mat.Dense {
+	// Perform concatenate allSmallRowBlocks row-wise
+	largeBlockRows := m / nodeRows
+	x := make([]float64, largeBlockRows*k)
+	for i := 0; i < nodeCols; i++ {
+		for j := 0; j < rowsPerNode; j++ {
+			for l := 0; l < k; l++ {
+				x[i*j*l] = parts[i].At(j, l)
+			}
+		}
+	}
+	return *mat.NewDense(largeBlockRows, k, x)
+}
+
+func (node *Node) newAllGatherAcrossNodeColumns(smallColumnBlock *mat.Dense, hColsPerNode int) mat.Matrix {
+	// Only concerned w/ nodes in same column
+	thisCol := node.nodeID % nodeCols
+	colIDs := make([]int, nodeRows)
+	colIDsIdx := 0
+	for i := 0; i < numNodes; i++ {
+		if (i % nodeCols) == thisCol {
+			colIDs[colIDsIdx] = i
+			colIDsIdx++
+		}
+	}
+
+	// send out my part (send to all for synchronization)
+	for i, c := range node.nodeChans {
+		if i != node.nodeID {
+			// if i != node.nodeID && in(colIDs, i) {
+			c <- MatMessage{
+				mtx:    *smallColumnBlock,
+				sentID: node.nodeID,
+			}
+		}
+	}
+
+	parts := make([]mat.Dense, nodeRows)
+	thisSmallBlockIndex := node.nodeID / nodeCols
+	parts[thisSmallBlockIndex] = *smallColumnBlock
+
+	// get parts from each other node (only record if node in same column)
+	done := 1
+	for done < numNodes {
+		// for done < nodeRows {
+		next := <-node.inChan
+		if in(colIDs, next.sentID) {
+			thisSmallBlockIndex := next.sentID / nodeCols
+			parts[thisSmallBlockIndex] = next.mtx
+		}
+		node.nodeAks[next.sentID] <- true
+		done++
+	}
+
+	// fmt.Println("Gathered across cols:", debugColMatricesFilled(parts))
+
+	// put those parts together
+	ret := node.localConcatenateColWise(parts, hColsPerNode)
+
+	// wait for all others to have received my matrix
+	for i := 0; i < numNodes-1; i++ {
+		// for i := 0; i < nodeRows-1; i++ {
+		<-node.aks
+	}
+
+	return &ret
 }
 
 // Combine these 2 methods into 1?
@@ -396,9 +474,60 @@ func (node *Node) allGatherAcrossNodeColumnsDummy(smallColumnBlock *mat.Dense, h
 		x[i] = rand.NormFloat64()
 	}
 	// Wait until everyone done
-	node.allFinishedAck()
+	// node.allFinishedAck()
 	// fmt.Println(node.nodeID, "in allGatherCol ALL done!")
 	return mat.NewDense(k, largeBlockCols, x)
+}
+
+func (node *Node) newAllGatherAcrossNodeRows(smallRowBlock *mat.Dense, wRowsPerNode int) mat.Matrix {
+	// Only concerned w/ nodes in same row
+	thisRow := node.nodeID / nodeCols
+	rowIDs := make([]int, nodeCols)
+	rowIDsIdx := 0
+	for i := 0; i < numNodes; i++ {
+		if (i / nodeCols) == thisRow {
+			rowIDs[rowIDsIdx] = i
+			rowIDsIdx++
+		}
+	}
+
+	// send out my part (send to all for synchronization)
+	for i, c := range node.nodeChans {
+		if i != node.nodeID {
+			c <- MatMessage{
+				mtx:    *smallRowBlock,
+				sentID: node.nodeID,
+			}
+		}
+	}
+
+	parts := make([]mat.Dense, nodeCols)
+	thisSmallBlockIndex := node.nodeID % nodeCols
+	parts[thisSmallBlockIndex] = *smallRowBlock
+
+	// get parts from each other node (only record if node in same row)
+	done := 1
+	for done < numNodes {
+		next := <-node.inChan
+		if in(rowIDs, next.sentID) {
+			thisSmallBlockIndex := next.sentID % nodeCols
+			parts[thisSmallBlockIndex] = next.mtx
+		}
+		node.nodeAks[next.sentID] <- true
+		done++
+	}
+
+	// fmt.Println("Gathered across rows:", debugRowMatricesFilled(parts))
+
+	// put those parts together
+	ret := node.localConcatenateRowWise(parts, wRowsPerNode)
+
+	// wait for all others to have received my matrix
+	for i := 0; i < numNodes-1; i++ {
+		<-node.aks
+	}
+
+	return &ret
 }
 
 // Within W row blocks
@@ -497,7 +626,7 @@ func (node *Node) allGatherAcrossNodeRowsDummy(smallRowBlock *mat.Dense, wRowsPe
 		x[i] = rand.NormFloat64()
 	}
 	// Wait until everyone done
-	node.allFinishedAck()
+	// node.allFinishedAck()
 	// fmt.Println(node.nodeID, "in allGatherRow ALL done!")
 	return mat.NewDense(largeBlockRows, k, x)
 }
@@ -599,7 +728,7 @@ func (node *Node) reduceScatterAcrossNodeRowsDummy(smallProductMatrix *mat.Dense
 	}
 
 	// Wait until everyone done
-	node.allFinishedAck()
+	// node.allFinishedAck()
 	// fmt.Println(node.nodeID, "in reduceScatterRow ALL done!")
 	return mat.NewDense(smallBlockRows, k, x)
 }
@@ -613,7 +742,7 @@ func (node *Node) reduceScatterAcrossNodeColumnsDummy(smallProductMatrix *mat.De
 	}
 
 	// Wait until everyone done
-	node.allFinishedAck()
+	// node.allFinishedAck()
 	// fmt.Println(node.nodeID, "in reduceScatterCol ALL done!")
 	return mat.NewDense(k, smallBlockCols, x)
 }

@@ -54,7 +54,7 @@ func parallelNMF(node *Node, maxIter int) {
 		HGramMat := node.newAllReduce(Uij)
 		// fmt.Println(node.nodeID, "did allReduce")
 		// 5)
-		Hj := node.allGatherAcrossNodeColumnsDummy(&Hji, hColsPerNode) // k x (n/p_c)
+		Hj := node.newAllGatherAcrossNodeColumns(&Hji, hColsPerNode) // k x (n/p_c)
 		// fmt.Println(node.nodeID, "did allGatherCols")
 		// 6)
 		Vij := &mat.Dense{}
@@ -73,7 +73,7 @@ func parallelNMF(node *Node, maxIter int) {
 		WGramMat := node.newAllReduce(Xij)
 		// fmt.Println(node.nodeID, "did allReduce")
 		// 11)
-		Wi := node.allGatherAcrossNodeRowsDummy(&Wij, wRowsPerNode) // (m/p_r) x k
+		Wi := node.newAllGatherAcrossNodeRows(&Wij, wRowsPerNode) // (m/p_r) x k
 		// fmt.Println(node.nodeID, "did allGatherRows")
 		// 12)
 		Yij := &mat.Dense{}
@@ -168,6 +168,11 @@ var wg sync.WaitGroup
 
 const m, n, k = 18, 12, 5
 const numNodes, nodeRows, nodeCols = 6, 3, 2
+
+const largeBlockSizeW = m / nodeRows
+const largeBlockSizeH = n / nodeCols
+const smallBlockSizeW = m / numNodes
+const smallBlockSizeH = n / numNodes
 
 func main() {
 	maxIter := 100
