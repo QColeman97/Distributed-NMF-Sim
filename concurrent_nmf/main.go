@@ -76,7 +76,7 @@ func parallelNMF(node *Node, maxIter int) {
 			matPrint(Vij)
 		}
 		// 7)
-		HProductMatij := node.reduceScatterAcrossNodeRows(Vij)
+		HProductMatij := node.reduceScatterAcrossNodeRows(Vij) // (m/p) x k
 		if node.nodeID == 0 && iter == 0 {
 			fmt.Println("Node 0 HProdMatij:")
 			matPrint(HProductMatij)
@@ -119,7 +119,7 @@ func parallelNMF(node *Node, maxIter int) {
 			matPrint(Yij)
 		}
 		// 13)
-		WProductMatji := node.reduceScatterAcrossNodeColumns(Yij)
+		WProductMatji := node.reduceScatterAcrossNodeColumns(Yij) // k x (n/p)
 		if node.nodeID == 0 && iter == 0 {
 			fmt.Println("Node 0 WProdMatji:")
 			matPrint(WProductMatji)
