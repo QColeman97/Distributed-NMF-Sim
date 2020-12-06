@@ -19,6 +19,8 @@ type Node struct {
 	// nodeChans     [numNodes]chan *mat.Dense // used to be mat.Matrix
 	// inChan        chan *mat.Dense
 	nodeChans [numNodes]chan MatMessage
+	nodeAks   [numNodes]chan bool
+	aks       chan bool
 	inChan    chan MatMessage
 	aPiece    mat.Matrix
 	state     int // monotonically increasing state ID - increment after each collective - for synchronization help
@@ -139,6 +141,48 @@ func (node *Node) allFinishedAck() {
 }
 
 // TODO - Make sure each node gets COPY of data, like in real dist system
+
+func localReduce(parts []mat.Dense) mat.Dense {
+	start := parts[0]
+	for i := 1; i < len(parts); i++ {
+		start.Add(&start, &parts[i])
+	}
+	return start
+}
+
+func (node *Node) newAllReduce(part *mat.Dense) *mat.Dense {
+	// send out my part
+	for _, c := range node.nodeChans {
+		c <- MatMessage{
+			mtx:       *part,
+			sentID:    node.nodeID,
+			msgType:   0,
+			sentState: 0,
+		}
+	}
+
+	parts := make([]mat.Dense, numNodes)
+	parts[node.nodeID] = *part
+
+	// get parts from each other node
+	done := 1
+	for done < numNodes {
+		next := <-node.inChan
+		parts[next.sentID] = next.mtx
+		node.nodeAks[next.sentID] <- true
+		done++
+	}
+
+	// put those parts together
+	ret := localReduce(parts)
+
+	// wait for all others to have received my matrix
+	for i := 0; i < numNodes-1; i++ {
+		<-node.aks
+	}
+
+	return &ret
+}
 
 // Across all nodes
 // func (node *Node) allReduce(smallGramMatrix *mat.Dense) [numNodes]*mat.Dense {

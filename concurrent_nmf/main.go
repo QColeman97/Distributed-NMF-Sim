@@ -137,19 +137,29 @@ func partitionAMatrix(A *mat.Dense) []mat.Matrix {
 	return piecesOfA
 }
 
-func makeNode(chans [numNodes]chan MatMessage, id int, aPiece mat.Matrix) *Node {
+func makeNode(chans [numNodes]chan MatMessage, akChans [numNodes]chan bool, id int, aPiece mat.Matrix) *Node {
 	return &Node{
 		nodeID:    id,
 		nodeChans: chans,
+		nodeAks:   akChans,
 		inChan:    chans[id],
 		aPiece:    aPiece,
+		aks:       akChans[id],
 	}
 }
 
 func makeMatrixChans() [numNodes]chan MatMessage {
 	var chans [numNodes]chan MatMessage
 	for ch := range chans {
-		chans[ch] = make(chan MatMessage, numNodes*2) // numNodes-1)
+		chans[ch] = make(chan MatMessage, numNodes*3) // numNodes-1)
+	}
+	return chans
+}
+
+func makeAkChans() [numNodes]chan bool {
+	var chans [numNodes]chan bool
+	for ch := range chans {
+		chans[ch] = make(chan bool, numNodes*3) // numNodes-1)
 	}
 	return chans
 }
@@ -179,10 +189,11 @@ func main() {
 	piecesOfA := partitionAMatrix(A)
 	// Init nodes
 	chans := makeMatrixChans()
+	akChans := makeAkChans()
 	var nodes [numNodes]*Node
 	for i := 0; i < numNodes; i++ {
 		id := i
-		nodes[i] = makeNode(chans, id, piecesOfA[i])
+		nodes[i] = makeNode(chans, akChans, id, piecesOfA[i])
 	}
 
 	// Launch nodes with their A pieces
