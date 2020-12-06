@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"math"
 	"math/rand"
+	"time"
 
 	"gonum.org/v1/gonum/mat"
 )
@@ -85,6 +86,8 @@ func main() {
 	}
 	H := mat.NewDense(k, n, h)
 
+	startTime := time.Now()
+
 	nmf(W, H, A, 100)
 
 	// fmt.Println("W:")
@@ -108,6 +111,8 @@ func main() {
 		}
 	}
 	approxA = mat.NewDense(m, n, aA)
+	duration := time.Now().Sub(startTime)
 	fmt.Println("\nApproximation of A:")
 	matPrint(approxA)
+	fmt.Println("Took", duration)
 }
