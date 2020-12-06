@@ -5,6 +5,7 @@ import (
 	"math"
 	"math/rand"
 	"sync"
+	"time"
 
 	"gonum.org/v1/gonum/mat"
 )
@@ -259,6 +260,8 @@ func main() {
 		nodes[i] = makeNode(chans, akChans, clientChan, id, piecesOfA[i])
 	}
 
+	startTime := time.Now()
+
 	// Launch nodes with their A pieces
 	for _, node := range nodes {
 		wg.Add(1)
@@ -316,6 +319,8 @@ func main() {
 		}
 	}
 	approxA = mat.NewDense(m, n, aA)
+	duration := time.Now().Sub(startTime)
 	fmt.Println("\nApproximation of A:")
 	matPrint(approxA)
+	fmt.Println("Took", duration)
 }
