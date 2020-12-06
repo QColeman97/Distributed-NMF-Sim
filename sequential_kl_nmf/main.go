@@ -2,6 +2,7 @@ package main
 
 import (
 	"fmt"
+	"math"
 	"math/rand"
 
 	"gonum.org/v1/gonum/mat"
@@ -65,7 +66,7 @@ func nmf(W *mat.Dense, H *mat.Dense, A *mat.Dense, ones *mat.Dense, maxIter int)
 	return W, H
 }
 
-const m, n, k = 3, 4, 2
+const m, n, k = 18, 12, 4
 
 func main() {
 	// Initialize input matrix A
@@ -90,18 +91,35 @@ func main() {
 	}
 	H := mat.NewDense(k, n, h)
 
-	ones := mat.NewDense(m, n, []float64{1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1})
+	o := make([]float64, m*n)
+	for i := 0; i < (m * n); i++ {
+		o[i] = 1
+	}
+	ones := mat.NewDense(m, n, o)
 
 	nmf(W, H, A, ones, 100)
 
-	fmt.Println("W:")
-	matPrint(W)
-	fmt.Println("H:")
-	matPrint(H)
+	// fmt.Println("W:")
+	// matPrint(W)
+	// fmt.Println("H:")
+	// matPrint(H)
 
-	approx := W.At(0, 0)*H.At(0, 2) + W.At(0, 1)*H.At(1, 2)
-	fmt.Println("Approximate A[0][2] using W & H:", approx)
+	// approx := W.At(0, 0)*H.At(0, 2) + W.At(0, 1)*H.At(1, 2)
+	// fmt.Println("Approximate A[0][2] using W & H:", approx)
 
-	approx = W.At(1, 0)*H.At(0, 1) + W.At(1, 1)*H.At(1, 1)
-	fmt.Println("Approximate A[1][1] using W & H:", approx)
+	// approx = W.At(1, 0)*H.At(0, 1) + W.At(1, 1)*H.At(1, 1)
+	// fmt.Println("Approximate A[1][1] using W & H:", approx)
+
+	approxA := &mat.Dense{}
+	approxA.Mul(W, H)
+	// Truncate values to no decimal
+	aA := make([]float64, m*n)
+	for i := 0; i < m; i++ {
+		for j := 0; j < n; j++ {
+			aA[(i*n)+j] = math.Round(approxA.At(i, j))
+		}
+	}
+	approxA = mat.NewDense(m, n, aA)
+	fmt.Println("\nApproximation of A:")
+	matPrint(approxA)
 }
