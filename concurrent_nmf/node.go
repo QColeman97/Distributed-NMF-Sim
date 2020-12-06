@@ -17,24 +17,24 @@ type Node struct {
 	aPiece     mat.Matrix
 }
 
-// MatMessage - give sender information & expected action along with matrix
+// MatMessage - give sender ID & extra info along with matrix
 type MatMessage struct {
 	mtx      mat.Dense
 	sentID   int
-	isFinalW bool
-	isFinalH bool
+	isFinalW bool // for return to client
+	isFinalH bool // for return to client
 }
 
-// implement MPI collectives
-//	- reduce-scatter 	- used across all proc rows
+// Implement MPI collectives
+//	- reduce-scatter 	- used across all proc rows/columns
 //		every node retrieve V/Y from every node
-//		every node performs reduction
-//		scatter data equally to other nodes
-//  - all-gather 		- used across all proc columns
-//		every node send their Hj/Wi to every node
+//		every node performs reduction & returns piece of reduction
+//  - all-gather 		- used across all proc columns/rows
+//		every node send their Hj/Wi to every node in row/col
+//		return concatenation of pieces
 //	- all-reduce 		- used across all proc
 //		every node retrieve U/X from every node
-//		every node performs reduction
+//		every node performs & returns reduction
 
 // Remember - sending a variable thru channel, is giving away that memory (can't use it afterwards - null pointer)
 
@@ -56,7 +56,7 @@ func (node *Node) localReduce(parts []mat.Dense) mat.Dense {
 	return start
 }
 
-func (node *Node) newAllReduce(part *mat.Dense) *mat.Dense {
+func (node *Node) allReduce(part *mat.Dense) *mat.Dense {
 	// send out my part
 	for i, c := range node.nodeChans {
 		if i != node.nodeID {
@@ -90,42 +90,40 @@ func (node *Node) newAllReduce(part *mat.Dense) *mat.Dense {
 	return &ret
 }
 
-func (node *Node) localConcatenateColWise(parts []mat.Dense, colsPerNode int) mat.Dense {
-	// Perform concatenate allSmallColBlocks column-wise
-	largeBlockCols := n / nodeCols
-	x := make([]float64, k*largeBlockCols)
+func (node *Node) localConcatenateColWise(parts []mat.Dense) mat.Dense {
+	// Perform concatenate column-wise
+	x := make([]float64, k*largeBlockSizeH)
 	for j := 0; j < k; j++ {
-		for i := 0; i < nodeRows; i++ {
-			for l := 0; l < colsPerNode; l++ {
+		for i := 0; i < numNodeRows; i++ {
+			for l := 0; l < smallBlockSizeH; l++ {
 				x[i*j*l] = parts[i].At(j, l)
 			}
 		}
 	}
 
-	return *mat.NewDense(k, largeBlockCols, x)
+	return *mat.NewDense(k, largeBlockSizeH, x)
 }
 
-func (node *Node) localConcatenateRowWise(parts []mat.Dense, rowsPerNode int) mat.Dense {
-	// Perform concatenate allSmallRowBlocks row-wise
-	largeBlockRows := m / nodeRows
-	x := make([]float64, largeBlockRows*k)
-	for i := 0; i < nodeCols; i++ {
-		for j := 0; j < rowsPerNode; j++ {
+func (node *Node) localConcatenateRowWise(parts []mat.Dense) mat.Dense {
+	// Perform concatenate row-wise
+	x := make([]float64, largeBlockSizeW*k)
+	for i := 0; i < numNodeCols; i++ {
+		for j := 0; j < smallBlockSizeW; j++ {
 			for l := 0; l < k; l++ {
 				x[i*j*l] = parts[i].At(j, l)
 			}
 		}
 	}
-	return *mat.NewDense(largeBlockRows, k, x)
+	return *mat.NewDense(largeBlockSizeW, k, x)
 }
 
-func (node *Node) newAllGatherAcrossNodeColumns(smallColumnBlock *mat.Dense, hColsPerNode int) mat.Matrix {
+func (node *Node) allGatherAcrossNodeColumns(smallColumnBlock *mat.Dense) mat.Matrix {
 	// Only concerned w/ nodes in same column
-	thisCol := node.nodeID % nodeCols
-	colIDs := make([]int, nodeRows)
+	thisCol := node.nodeID % numNodeCols
+	colIDs := make([]int, numNodeRows)
 	colIDsIdx := 0
 	for i := 0; i < numNodes; i++ {
-		if (i % nodeCols) == thisCol {
+		if (i % numNodeCols) == thisCol {
 			colIDs[colIDsIdx] = i
 			colIDsIdx++
 		}
@@ -134,7 +132,6 @@ func (node *Node) newAllGatherAcrossNodeColumns(smallColumnBlock *mat.Dense, hCo
 	// send out my part (send to all for synchronization)
 	for i, c := range node.nodeChans {
 		if i != node.nodeID {
-			// if i != node.nodeID && in(colIDs, i) {
 			c <- MatMessage{
 				mtx:    *smallColumnBlock,
 				sentID: node.nodeID,
@@ -142,58 +139,50 @@ func (node *Node) newAllGatherAcrossNodeColumns(smallColumnBlock *mat.Dense, hCo
 		}
 	}
 
-	parts := make([]mat.Dense, nodeRows)
-	thisSmallBlockIndex := node.nodeID / nodeCols
+	parts := make([]mat.Dense, numNodeRows)
+	thisSmallBlockIndex := node.nodeID / numNodeCols
 	parts[thisSmallBlockIndex] = *smallColumnBlock
 
 	// get parts from each other node (only record if node in same column)
 	done := 1
 	for done < numNodes {
-		// for done < nodeRows {
 		next := <-node.inChan
 		if in(colIDs, next.sentID) {
-			thisSmallBlockIndex := next.sentID / nodeCols
+			thisSmallBlockIndex := next.sentID / numNodeCols
 			parts[thisSmallBlockIndex] = next.mtx
 		}
 		node.nodeAks[next.sentID] <- true
 		done++
 	}
 
-	// fmt.Println("Gathered across cols:", debugColMatricesFilled(parts))
-
 	// put those parts together
-	ret := node.localConcatenateColWise(parts, hColsPerNode)
+	ret := node.localConcatenateColWise(parts)
 
 	// wait for all others to have received my matrix
 	for i := 0; i < numNodes-1; i++ {
-		// for i := 0; i < nodeRows-1; i++ {
 		<-node.aks
 	}
 
 	return &ret
 }
 
-func (node *Node) allGatherAcrossNodeColumnsDummy(smallColumnBlock *mat.Dense, hColsPerNode int) mat.Matrix {
+func (node *Node) allGatherAcrossNodeColumnsDummy(smallColumnBlock *mat.Dense) mat.Matrix {
 	// fmt.Println(node.nodeID, "["+strconv.Itoa(node.state)+"]in allGatherCol")
-
-	largeBlockCols := n / nodeCols
-	x := make([]float64, k*largeBlockCols)
+	x := make([]float64, k*largeBlockSizeH)
 	for i := range x {
 		x[i] = rand.NormFloat64()
 	}
-	// Wait until everyone done
-	// node.allFinishedAck()
-	// fmt.Println(node.nodeID, "in allGatherCol ALL done!")
-	return mat.NewDense(k, largeBlockCols, x)
+
+	return mat.NewDense(k, largeBlockSizeH, x)
 }
 
-func (node *Node) newAllGatherAcrossNodeRows(smallRowBlock *mat.Dense, wRowsPerNode int) mat.Matrix {
+func (node *Node) allGatherAcrossNodeRows(smallRowBlock *mat.Dense) mat.Matrix {
 	// Only concerned w/ nodes in same row
-	thisRow := node.nodeID / nodeCols
-	rowIDs := make([]int, nodeCols)
+	thisRow := node.nodeID / numNodeCols
+	rowIDs := make([]int, numNodeCols)
 	rowIDsIdx := 0
 	for i := 0; i < numNodes; i++ {
-		if (i / nodeCols) == thisRow {
+		if (i / numNodeCols) == thisRow {
 			rowIDs[rowIDsIdx] = i
 			rowIDsIdx++
 		}
@@ -209,8 +198,8 @@ func (node *Node) newAllGatherAcrossNodeRows(smallRowBlock *mat.Dense, wRowsPerN
 		}
 	}
 
-	parts := make([]mat.Dense, nodeCols)
-	thisSmallBlockIndex := node.nodeID % nodeCols
+	parts := make([]mat.Dense, numNodeCols)
+	thisSmallBlockIndex := node.nodeID % numNodeCols
 	parts[thisSmallBlockIndex] = *smallRowBlock
 
 	// get parts from each other node (only record if node in same row)
@@ -218,17 +207,15 @@ func (node *Node) newAllGatherAcrossNodeRows(smallRowBlock *mat.Dense, wRowsPerN
 	for done < numNodes {
 		next := <-node.inChan
 		if in(rowIDs, next.sentID) {
-			thisSmallBlockIndex := next.sentID % nodeCols
+			thisSmallBlockIndex := next.sentID % numNodeCols
 			parts[thisSmallBlockIndex] = next.mtx
 		}
 		node.nodeAks[next.sentID] <- true
 		done++
 	}
 
-	// fmt.Println("Gathered across rows:", debugRowMatricesFilled(parts))
-
 	// put those parts together
-	ret := node.localConcatenateRowWise(parts, wRowsPerNode)
+	ret := node.localConcatenateRowWise(parts)
 
 	// wait for all others to have received my matrix
 	for i := 0; i < numNodes-1; i++ {
@@ -238,27 +225,24 @@ func (node *Node) newAllGatherAcrossNodeRows(smallRowBlock *mat.Dense, wRowsPerN
 	return &ret
 }
 
-func (node *Node) allGatherAcrossNodeRowsDummy(smallRowBlock *mat.Dense, wRowsPerNode int) mat.Matrix {
+func (node *Node) allGatherAcrossNodeRowsDummy(smallRowBlock *mat.Dense) mat.Matrix {
 	// fmt.Println(node.nodeID, "["+strconv.Itoa(node.state)+"]in allGatherRow")
-
-	largeBlockRows := m / nodeRows
-	x := make([]float64, largeBlockRows*k)
+	x := make([]float64, largeBlockSizeW*k)
 	for i := range x {
 		x[i] = rand.NormFloat64()
 	}
-	// Wait until everyone done
-	// node.allFinishedAck()
+
 	// fmt.Println(node.nodeID, "in allGatherRow ALL done!")
-	return mat.NewDense(largeBlockRows, k, x)
+	return mat.NewDense(largeBlockSizeW, k, x)
 }
 
-func (node *Node) newReduceScatterAcrossNodeRows(smallRowBlock *mat.Dense) mat.Matrix {
+func (node *Node) reduceScatterAcrossNodeRows(smallRowBlock *mat.Dense) mat.Matrix {
 	// Only concerned w/ nodes in same row
-	thisRow := node.nodeID / nodeCols
-	rowIDs := make([]int, nodeCols)
+	thisRow := node.nodeID / numNodeCols
+	rowIDs := make([]int, numNodeCols)
 	rowIDsIdx := 0
 	for i := 0; i < numNodes; i++ {
-		if (i / nodeCols) == thisRow {
+		if (i / numNodeCols) == thisRow {
 			rowIDs[rowIDsIdx] = i
 			rowIDsIdx++
 		}
@@ -274,8 +258,8 @@ func (node *Node) newReduceScatterAcrossNodeRows(smallRowBlock *mat.Dense) mat.M
 		}
 	}
 
-	parts := make([]mat.Dense, nodeCols)
-	thisSmallBlockIndex := node.nodeID % nodeCols
+	parts := make([]mat.Dense, numNodeCols)
+	thisSmallBlockIndex := node.nodeID % numNodeCols
 	parts[thisSmallBlockIndex] = *smallRowBlock
 
 	// get parts from each other node (only record if node in same row)
@@ -283,7 +267,7 @@ func (node *Node) newReduceScatterAcrossNodeRows(smallRowBlock *mat.Dense) mat.M
 	for done < numNodes {
 		next := <-node.inChan
 		if in(rowIDs, next.sentID) {
-			thisSmallBlockIndex := next.sentID % nodeCols
+			thisSmallBlockIndex := next.sentID % numNodeCols
 			parts[thisSmallBlockIndex] = next.mtx
 		}
 		node.nodeAks[next.sentID] <- true
@@ -296,18 +280,6 @@ func (node *Node) newReduceScatterAcrossNodeRows(smallRowBlock *mat.Dense) mat.M
 	// scatter reduceProduct to others in row evenly
 	ret := reduceProduct.Slice(thisSmallBlockIndex*smallBlockSizeW, (thisSmallBlockIndex+1)*smallBlockSizeW, 0, k)
 
-	// vRows, vCols := (m / numNodes), k
-	// for i, ch := range node.nodeChans {
-	// 	if i != node.nodeID {
-	// 		// TODO - fix mem issue
-	// 		// Only send copies of matrix
-	// 		sliceToScatter := reduceProduct.Slice(i*vRows, (i+1)*vRows, 0, vCols)
-	// 		message := mat.DenseCopyOf(sliceToScatter)
-	// 		scatterMatrixMsg := MatMessage{*message, node.nodeID, reduceScatterType, node.state}
-	// 		ch <- scatterMatrixMsg
-	// 	}
-	// }
-
 	// wait for all others to have received my matrix
 	for i := 0; i < numNodes-1; i++ {
 		<-node.aks
@@ -316,13 +288,13 @@ func (node *Node) newReduceScatterAcrossNodeRows(smallRowBlock *mat.Dense) mat.M
 	return ret
 }
 
-func (node *Node) newReduceScatterAcrossNodeColumns(smallColumnBlock *mat.Dense) mat.Matrix {
+func (node *Node) reduceScatterAcrossNodeColumns(smallColumnBlock *mat.Dense) mat.Matrix {
 	// Only concerned w/ nodes in same column
-	thisCol := node.nodeID % nodeCols
-	colIDs := make([]int, nodeRows)
+	thisCol := node.nodeID % numNodeCols
+	colIDs := make([]int, numNodeRows)
 	colIDsIdx := 0
 	for i := 0; i < numNodes; i++ {
-		if (i % nodeCols) == thisCol {
+		if (i % numNodeCols) == thisCol {
 			colIDs[colIDsIdx] = i
 			colIDsIdx++
 		}
@@ -338,17 +310,17 @@ func (node *Node) newReduceScatterAcrossNodeColumns(smallColumnBlock *mat.Dense)
 		}
 	}
 
-	parts := make([]mat.Dense, nodeRows)
-	thisSmallBlockIndex := node.nodeID / nodeCols
+	parts := make([]mat.Dense, numNodeRows)
+	thisSmallBlockIndex := node.nodeID / numNodeCols
 	parts[thisSmallBlockIndex] = *smallColumnBlock
 
 	// get parts from each other node (only record if node in same column)
 	done := 1
 	for done < numNodes {
-		// for done < nodeRows {
+		// for done < numNodeRows {
 		next := <-node.inChan
 		if in(colIDs, next.sentID) {
-			thisSmallBlockIndex := next.sentID / nodeCols
+			thisSmallBlockIndex := next.sentID / numNodeCols
 			parts[thisSmallBlockIndex] = next.mtx
 		}
 		node.nodeAks[next.sentID] <- true
@@ -372,28 +344,22 @@ func (node *Node) newReduceScatterAcrossNodeColumns(smallColumnBlock *mat.Dense)
 // Combine these 2 methods into 1?
 func (node *Node) reduceScatterAcrossNodeRowsDummy(smallProductMatrix *mat.Dense) *mat.Dense {
 	// fmt.Println(node.nodeID, "["+strconv.Itoa(node.state)+"]in reduceScatterRow")
-	smallBlockRows := m / numNodes
-	x := make([]float64, smallBlockRows*k)
+	x := make([]float64, smallBlockSizeW*k)
 	for i := range x {
 		x[i] = rand.NormFloat64()
 	}
 
-	// Wait until everyone done
-	// node.allFinishedAck()
 	// fmt.Println(node.nodeID, "in reduceScatterRow ALL done!")
-	return mat.NewDense(smallBlockRows, k, x)
+	return mat.NewDense(smallBlockSizeW, k, x)
 }
 
 func (node *Node) reduceScatterAcrossNodeColumnsDummy(smallProductMatrix *mat.Dense) *mat.Dense {
 	// fmt.Println(node.nodeID, "["+strconv.Itoa(node.state)+"]in reduceScatterRow")
-	smallBlockCols := n / numNodes
-	x := make([]float64, k*smallBlockCols)
+	x := make([]float64, k*smallBlockSizeH)
 	for i := range x {
 		x[i] = rand.NormFloat64()
 	}
 
-	// Wait until everyone done
-	// node.allFinishedAck()
 	// fmt.Println(node.nodeID, "in reduceScatterCol ALL done!")
-	return mat.NewDense(k, smallBlockCols, x)
+	return mat.NewDense(k, smallBlockSizeH, x)
 }

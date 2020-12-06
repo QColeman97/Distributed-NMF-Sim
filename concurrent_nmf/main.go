@@ -18,63 +18,60 @@ func matPrint(X mat.Matrix) {
 // Xi = ith row block of X, X^i = ith column block of X
 // xi = ith row of X, x^i = ith column of X
 
+// Corresponding MPI-FAUN steps in comments
 func parallelNMF(node *Node, maxIter int) {
 	// Local matrices
 	var Wij, Hji mat.Dense
 
-	wRowsPerNode := m / numNodes // m/p
-	hColsPerNode := n / numNodes // n/p
-
-	// MPI-FAUN steps in comments
 	// 1) Initialize Hji - dims = k x (n/p)
-	h := make([]float64, k*hColsPerNode)
+	h := make([]float64, k*smallBlockSizeH)
 	for i := range h {
 		h[i] = rand.NormFloat64()
 	}
-	Hji = *mat.NewDense(k, hColsPerNode, h)
+	Hji = *mat.NewDense(k, smallBlockSizeH, h)
 	// Not in paper, but maybe initialize Wij too - dims = (m/p) x k
-	w := make([]float64, wRowsPerNode*k)
+	w := make([]float64, smallBlockSizeW*k)
 	for i := range w {
 		w[i] = rand.NormFloat64()
 	}
-	Wij = *mat.NewDense(wRowsPerNode, k, w)
+	Wij = *mat.NewDense(smallBlockSizeW, k, w)
 
 	for iter := 0; iter < maxIter; iter++ {
 		// fmt.Println(node.nodeID, "ITER #", iter+1)
-		// Update W below
+		// Update W Part
 		// 3)
 		Uij := &mat.Dense{}
 		Uij.Mul(&Hji, Hji.T()) // k x k
 		// 4)
-		HGramMat := node.newAllReduce(Uij)
+		HGramMat := node.allReduce(Uij)
 		// fmt.Println(node.nodeID, "did allReduce")
 		// 5)
-		Hj := node.newAllGatherAcrossNodeColumns(&Hji, hColsPerNode) // k x (n/p_c)
+		Hj := node.allGatherAcrossNodeColumns(&Hji) // k x (n/p_c)
 		// fmt.Println(node.nodeID, "did allGatherCols")
 		// 6)
 		Vij := &mat.Dense{}
 		Vij.Mul(node.aPiece, Hj.T()) // (m/pr) x k
 		// 7)
-		HProductMatij := node.newReduceScatterAcrossNodeRows(Vij)
+		HProductMatij := node.reduceScatterAcrossNodeRows(Vij)
 		// fmt.Println(node.nodeID, "did reduceScatterRow")
 		// 8)
 		updateW(&Wij, HGramMat, HProductMatij)
 		// fmt.Println(node.nodeID, "updated W")
-		// Update H below
+		// Update H Part
 		// 9)
 		Xij := &mat.Dense{}
 		Xij.Mul(Wij.T(), &Wij) // k x k
 		// 10)
-		WGramMat := node.newAllReduce(Xij)
+		WGramMat := node.allReduce(Xij)
 		// fmt.Println(node.nodeID, "did allReduce")
 		// 11)
-		Wi := node.newAllGatherAcrossNodeRows(&Wij, wRowsPerNode) // (m/p_r) x k
+		Wi := node.allGatherAcrossNodeRows(&Wij) // (m/p_r) x k
 		// fmt.Println(node.nodeID, "did allGatherRows")
 		// 12)
 		Yij := &mat.Dense{}
 		Yij.Mul(Wi.T(), node.aPiece) // k x (n/p_c)
 		// 13)
-		WProductMatij := node.newReduceScatterAcrossNodeColumns(Yij)
+		WProductMatij := node.reduceScatterAcrossNodeColumns(Yij)
 		// fmt.Println(node.nodeID, "did reduceScatterCols")
 		// 14)
 		updateH(&Hji, WGramMat, WProductMatij)
@@ -88,14 +85,12 @@ func parallelNMF(node *Node, maxIter int) {
 	wg.Done()
 }
 
-// Line 8 of MPI-FAUN
-// Multiplicative Update: W = W * ((A @ Ht) / (W @ (H @ Ht)))
+// Line 8 of MPI-FAUN - Multiplicative Update: W = W * ((A @ Ht) / (W @ (H @ Ht)))
 // Formula uses: Gram matrix, matrix product w/ A, and W
+// 		W dims = (m/p) x k
+// 		HGramMat dims = k x k
+// 		HProductMatij dims = (m/p) x k
 func updateW(W *mat.Dense, HGramMat *mat.Dense, HProductMatij mat.Matrix) {
-	// W dims = (m/p) x k
-	// HGramMat dims = k x k
-	// HProductMatij dims = (m/p) x k
-
 	update := &mat.Dense{}
 	update.Mul(W, HGramMat) // (m/p) x k
 
@@ -103,14 +98,12 @@ func updateW(W *mat.Dense, HGramMat *mat.Dense, HProductMatij mat.Matrix) {
 	W.MulElem(W, update)
 }
 
-// Line 14 of MPI-FAUN
-// Multiplicative Update: H = H * ((Wt @ A) / ((Wt @ W) @ H))
+// Line 14 of MPI-FAUN - Multiplicative Update: H = H * ((Wt @ A) / ((Wt @ W) @ H))
 // Formula uses: Gram matrix, matrix product w/ A, and H
+// 		H dims = k x (n/p)
+// 		WGramMat dims = k x k
+// 		WProductMatij dims = k x (n/p)
 func updateH(H *mat.Dense, WGramMat *mat.Dense, WProductMatij mat.Matrix) {
-	// H dims = k x (n/p)
-	// WGramMat dims = k x k
-	// WProductMatij dims = k x (n/p)
-
 	update := &mat.Dense{}
 	update.Mul(WGramMat, H) // k x (n/p)
 
@@ -120,13 +113,10 @@ func updateH(H *mat.Dense, WGramMat *mat.Dense, WProductMatij mat.Matrix) {
 
 func partitionAMatrix(A *mat.Dense) []mat.Matrix {
 	var piecesOfA []mat.Matrix
-	aRowsPerNode, aColsPerNode := m/nodeRows, n/nodeCols // (m/p_r), (n/p_c)
-	// fmt.Println("A rows per node:", aRowsPerNode, "A columns per node:", aColsPerNode)
 
-	for i := 0; i < nodeRows; i++ {
-		for j := 0; j < nodeCols; j++ {
-			// fmt.Println("A", rowsPerNode*i, rowsPerNode*(i+1), colsPerNode*j, colsPerNode*(j+1))
-			aPiece := A.Slice(aRowsPerNode*i, aRowsPerNode*(i+1), aColsPerNode*j, aColsPerNode*(j+1))
+	for i := 0; i < numNodeRows; i++ {
+		for j := 0; j < numNodeCols; j++ {
+			aPiece := A.Slice(largeBlockSizeW*i, largeBlockSizeW*(i+1), largeBlockSizeH*j, largeBlockSizeH*(j+1))
 			// Make pieces each their own copies of the data
 			piecesOfA = append(piecesOfA, mat.DenseCopyOf(aPiece))
 		}
@@ -166,20 +156,12 @@ func makeAkChans() [numNodes]chan bool {
 var wg sync.WaitGroup
 
 const m, n, k = 18, 12, 5
-const numNodes, nodeRows, nodeCols = 6, 3, 2
+const numNodes, numNodeRows, numNodeCols = 6, 3, 2
 
-const largeBlockSizeW = m / nodeRows
-const largeBlockSizeH = n / nodeCols
+const largeBlockSizeW = m / numNodeRows
+const largeBlockSizeH = n / numNodeCols
 const smallBlockSizeW = m / numNodes
 const smallBlockSizeH = n / numNodes
-
-func debugMatricesFilled(eachMatrix []mat.Dense) [numNodes]bool {
-	var filled [numNodes]bool
-	for i := 0; i < numNodes; i++ {
-		filled[i] = !eachMatrix[i].IsEmpty()
-	}
-	return filled
-}
 
 func main() {
 	maxIter := 100
@@ -229,7 +211,7 @@ func main() {
 	}
 	wg.Wait()
 
-	// Construct full W matrix
+	// Construct W
 	w := make([]float64, m*k)
 	for i := 0; i < numNodes; i++ {
 		for j := 0; j < smallBlockSizeW; j++ {
@@ -240,7 +222,7 @@ func main() {
 	}
 	W := mat.NewDense(m, k, w)
 
-	// Construct full H matrix
+	// Construct H
 	h := make([]float64, k*n)
 	for j := 0; j < k; j++ {
 		for i := 0; i < numNodes; i++ {
@@ -258,7 +240,6 @@ func main() {
 
 	approxA := &mat.Dense{}
 	approxA.Mul(W, H)
-	fmt.Println("\nA Approximation:")
+	fmt.Println("\nApproximation of A:")
 	matPrint(approxA)
-	// fmt.Println("Done")
 }
