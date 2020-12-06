@@ -2,6 +2,7 @@ package main
 
 import (
 	"fmt"
+	"math"
 	"math/rand"
 	"sync"
 
@@ -299,6 +300,14 @@ func main() {
 
 	approxA := &mat.Dense{}
 	approxA.Mul(W, H)
+	// Truncate values to no decimal
+	aA := make([]float64, m*n)
+	for i := 0; i < m; i++ {
+		for j := 0; j < n; j++ {
+			aA[(i*n)+j] = math.Round(approxA.At(i, j))
+		}
+	}
+	approxA = mat.NewDense(m, n, aA)
 	fmt.Println("\nApproximation of A:")
 	matPrint(approxA)
 }
