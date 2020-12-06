@@ -29,12 +29,20 @@ func parallelNMF(node *Node, maxIter int) {
 		h[i] = rand.NormFloat64()
 	}
 	Hji = *mat.NewDense(k, smallBlockSizeH, h)
+	if node.nodeID == 0 {
+		fmt.Println("Node 0 Initial Hji:")
+		matPrint(&Hji)
+	}
 	// Not in paper, but maybe initialize Wij too - dims = (m/p) x k
 	w := make([]float64, smallBlockSizeW*k)
 	for i := range w {
 		w[i] = rand.NormFloat64()
 	}
 	Wij = *mat.NewDense(smallBlockSizeW, k, w)
+	if node.nodeID == 0 {
+		fmt.Println("Node 0 Initial Wij:")
+		matPrint(&Wij)
+	}
 
 	for iter := 0; iter < maxIter; iter++ {
 		// fmt.Println(node.nodeID, "ITER #", iter+1)
@@ -42,39 +50,87 @@ func parallelNMF(node *Node, maxIter int) {
 		// 3)
 		Uij := &mat.Dense{}
 		Uij.Mul(&Hji, Hji.T()) // k x k
+		if node.nodeID == 0 && iter == 0 {
+			fmt.Println("Node 0 Uij:")
+			matPrint(Uij)
+		}
 		// 4)
 		HGramMat := node.allReduce(Uij)
+		if node.nodeID == 0 && iter == 0 {
+			fmt.Println("Node 0 HGramMat:")
+			matPrint(HGramMat)
+		}
 		// fmt.Println(node.nodeID, "did allReduce")
 		// 5)
 		Hj := node.allGatherAcrossNodeColumns(&Hji) // k x (n/p_c)
+		if node.nodeID == 0 && iter == 0 {
+			fmt.Println("Node 0 Hj:")
+			matPrint(Hj)
+		}
 		// fmt.Println(node.nodeID, "did allGatherCols")
 		// 6)
 		Vij := &mat.Dense{}
 		Vij.Mul(node.aPiece, Hj.T()) // (m/pr) x k
+		if node.nodeID == 0 && iter == 0 {
+			fmt.Println("Node 0 Vij:")
+			matPrint(Vij)
+		}
 		// 7)
 		HProductMatij := node.reduceScatterAcrossNodeRows(Vij)
+		if node.nodeID == 0 && iter == 0 {
+			fmt.Println("Node 0 HProdMatij:")
+			matPrint(HProductMatij)
+		}
 		// fmt.Println(node.nodeID, "did reduceScatterRow")
 		// 8)
 		updateW(&Wij, HGramMat, HProductMatij)
+		if node.nodeID == 0 && iter == 0 {
+			fmt.Println("Node 0 UPDATED Wij:")
+			matPrint(&Wij)
+		}
 		// fmt.Println(node.nodeID, "updated W")
 		// Update H Part
 		// 9)
 		Xij := &mat.Dense{}
 		Xij.Mul(Wij.T(), &Wij) // k x k
+		if node.nodeID == 0 && iter == 0 {
+			fmt.Println("Node 0 Xij:")
+			matPrint(Xij)
+		}
 		// 10)
 		WGramMat := node.allReduce(Xij)
+		if node.nodeID == 0 && iter == 0 {
+			fmt.Println("Node 0 WGramMat:")
+			matPrint(WGramMat)
+		}
 		// fmt.Println(node.nodeID, "did allReduce")
 		// 11)
 		Wi := node.allGatherAcrossNodeRows(&Wij) // (m/p_r) x k
+		if node.nodeID == 0 && iter == 0 {
+			fmt.Println("Node 0 Wi:")
+			matPrint(Wi)
+		}
 		// fmt.Println(node.nodeID, "did allGatherRows")
 		// 12)
 		Yij := &mat.Dense{}
 		Yij.Mul(Wi.T(), node.aPiece) // k x (n/p_c)
+		if node.nodeID == 0 && iter == 0 {
+			fmt.Println("Node 0 Yij:")
+			matPrint(Yij)
+		}
 		// 13)
-		WProductMatij := node.reduceScatterAcrossNodeColumns(Yij)
+		WProductMatji := node.reduceScatterAcrossNodeColumns(Yij)
+		if node.nodeID == 0 && iter == 0 {
+			fmt.Println("Node 0 WProdMatji:")
+			matPrint(WProductMatji)
+		}
 		// fmt.Println(node.nodeID, "did reduceScatterCols")
 		// 14)
-		updateH(&Hji, WGramMat, WProductMatij)
+		updateH(&Hji, WGramMat, WProductMatji)
+		if node.nodeID == 0 && iter == 0 {
+			fmt.Println("Node 0 UPDATED Hji:")
+			matPrint(&Hji)
+		}
 		// fmt.Println(node.nodeID, "updated H")
 	}
 
@@ -102,12 +158,12 @@ func updateW(W *mat.Dense, HGramMat *mat.Dense, HProductMatij mat.Matrix) {
 // Formula uses: Gram matrix, matrix product w/ A, and H
 // 		H dims = k x (n/p)
 // 		WGramMat dims = k x k
-// 		WProductMatij dims = k x (n/p)
-func updateH(H *mat.Dense, WGramMat *mat.Dense, WProductMatij mat.Matrix) {
+// 		WProductMatji dims = k x (n/p)
+func updateH(H *mat.Dense, WGramMat *mat.Dense, WProductMatji mat.Matrix) {
 	update := &mat.Dense{}
 	update.Mul(WGramMat, H) // k x (n/p)
 
-	update.DivElem(WProductMatij, update)
+	update.DivElem(WProductMatji, update)
 	H.MulElem(H, update)
 }
 

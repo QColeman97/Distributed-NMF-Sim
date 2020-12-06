@@ -95,11 +95,18 @@ func (node *Node) localConcatenateColWise(parts []mat.Dense) mat.Dense {
 	x := make([]float64, k*largeBlockSizeH)
 	for j := 0; j < k; j++ {
 		for i := 0; i < numNodeRows; i++ {
+			// if node.nodeID == 0 && j == 0 {
+			// 	fmt.Println("Hji piece from other nodes ( i =", i, "):")
+			// 	matPrint(&parts[i])
+			// }
 			for l := 0; l < smallBlockSizeH; l++ {
-				x[i*j*l] = parts[i].At(j, l)
+				x[(j*numNodeRows*smallBlockSizeH)+(i*smallBlockSizeH)+l] = parts[i].At(j, l)
 			}
 		}
 	}
+	// if node.nodeID == 0 {
+	// 	fmt.Println("x (size =", len(x), "):", x)
+	// }
 
 	return *mat.NewDense(k, largeBlockSizeH, x)
 }
@@ -110,7 +117,8 @@ func (node *Node) localConcatenateRowWise(parts []mat.Dense) mat.Dense {
 	for i := 0; i < numNodeCols; i++ {
 		for j := 0; j < smallBlockSizeW; j++ {
 			for l := 0; l < k; l++ {
-				x[i*j*l] = parts[i].At(j, l)
+				x[(i*smallBlockSizeW*k)+(j*k)+l] = parts[i].At(j, l)
+				// x[(j*numNodeRows*smallBlockSizeH)+(i*smallBlockSizeH)+l] = parts[i].At(j, l)
 			}
 		}
 	}
