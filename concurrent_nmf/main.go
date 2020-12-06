@@ -51,10 +51,10 @@ func parallelNMF(node *Node, maxIter int) {
 		Uij := &mat.Dense{}
 		Uij.Mul(&Hji, Hji.T()) // k x k
 		// 4)
-		HGramMat := node.allReduce(Uij)
+		HGramMat := node.newAllReduce(Uij)
 		// fmt.Println(node.nodeID, "did allReduce")
 		// 5)
-		Hj := node.allGatherAcrossNodeColumns(&Hji, hColsPerNode) // k x (n/p_c)
+		Hj := node.allGatherAcrossNodeColumnsDummy(&Hji, hColsPerNode) // k x (n/p_c)
 		// fmt.Println(node.nodeID, "did allGatherCols")
 		// 6)
 		Vij := &mat.Dense{}
@@ -70,10 +70,10 @@ func parallelNMF(node *Node, maxIter int) {
 		Xij := &mat.Dense{}
 		Xij.Mul(Wij.T(), &Wij) // k x k
 		// 10)
-		WGramMat := node.allReduce(Xij)
+		WGramMat := node.newAllReduce(Xij)
 		// fmt.Println(node.nodeID, "did allReduce")
 		// 11)
-		Wi := node.allGatherAcrossNodeRows(&Wij, wRowsPerNode) // (m/p_r) x k
+		Wi := node.allGatherAcrossNodeRowsDummy(&Wij, wRowsPerNode) // (m/p_r) x k
 		// fmt.Println(node.nodeID, "did allGatherRows")
 		// 12)
 		Yij := &mat.Dense{}

@@ -1,6 +1,7 @@
 package main
 
 import (
+	"fmt"
 	"math/rand"
 
 	"gonum.org/v1/gonum/mat"
@@ -46,7 +47,6 @@ type MatMessage struct {
 //		every node retrieve U/X from every node
 //		every node performs reduction
 
-// Remember butterfly pattern for all-collectives
 // Remember - sending a variable thru channel, is giving away that memory (can't use it afterwards - null pointer)
 
 // Methods like Python all method
@@ -84,6 +84,13 @@ func allColMatricesFilled(eachMatrix [nodeRows]mat.Dense) bool {
 }
 
 // Debug prints for allGathers w/in collective methods
+func debugMatricesFilledV2(eachMatrix []mat.Dense) [numNodes]bool {
+	var filled [numNodes]bool
+	for i := 0; i < numNodes; i++ {
+		filled[i] = !eachMatrix[i].IsEmpty()
+	}
+	return filled
+}
 func debugMatricesFilled(eachMatrix [numNodes]mat.Dense) [numNodes]bool {
 	var filled [numNodes]bool
 	for i := 0; i < numNodes; i++ {
@@ -142,9 +149,17 @@ func (node *Node) allFinishedAck() {
 
 // TODO - Make sure each node gets COPY of data, like in real dist system
 
-func localReduce(parts []mat.Dense) mat.Dense {
+func (node *Node) localReduce(parts []mat.Dense) mat.Dense {
 	start := parts[0]
+	// if node.nodeID == 0 {
+	// 	startRows, startCols := start.Dims()
+	// 	fmt.Println("Start rows, start cols:", startRows, startCols)
+	// }
 	for i := 1; i < len(parts); i++ {
+		// if node.nodeID == 0 {
+		// 	nextRows, nextCols := parts[i].Dims()
+		// 	fmt.Println("Next rows, next cols:", nextRows, nextCols)
+		// }
 		start.Add(&start, &parts[i])
 	}
 	return start
@@ -152,12 +167,14 @@ func localReduce(parts []mat.Dense) mat.Dense {
 
 func (node *Node) newAllReduce(part *mat.Dense) *mat.Dense {
 	// send out my part
-	for _, c := range node.nodeChans {
-		c <- MatMessage{
-			mtx:       *part,
-			sentID:    node.nodeID,
-			msgType:   0,
-			sentState: 0,
+	for i, c := range node.nodeChans {
+		if i != node.nodeID {
+			c <- MatMessage{
+				mtx:       *part,
+				sentID:    node.nodeID,
+				msgType:   0,
+				sentState: 0,
+			}
 		}
 	}
 
@@ -173,8 +190,12 @@ func (node *Node) newAllReduce(part *mat.Dense) *mat.Dense {
 		done++
 	}
 
+	if node.nodeID == 0 {
+		fmt.Println("Parts (filled or not):", debugMatricesFilledV2(parts))
+	}
+
 	// put those parts together
-	ret := localReduce(parts)
+	ret := node.localReduce(parts)
 
 	// wait for all others to have received my matrix
 	for i := 0; i < numNodes-1; i++ {
