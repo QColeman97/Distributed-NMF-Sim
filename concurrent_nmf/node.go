@@ -151,15 +151,15 @@ func (node *Node) allFinishedAck() {
 
 func (node *Node) localReduce(parts []mat.Dense) mat.Dense {
 	start := parts[0]
-	// if node.nodeID == 0 {
-	// 	startRows, startCols := start.Dims()
-	// 	fmt.Println("Start rows, start cols:", startRows, startCols)
-	// }
+	if node.nodeID == 0 {
+		startRows, startCols := start.Dims()
+		fmt.Println("Start rows, start cols:", startRows, startCols)
+	}
 	for i := 1; i < len(parts); i++ {
-		// if node.nodeID == 0 {
-		// 	nextRows, nextCols := parts[i].Dims()
-		// 	fmt.Println("Next rows, next cols:", nextRows, nextCols)
-		// }
+		if node.nodeID == 0 {
+			nextRows, nextCols := parts[i].Dims()
+			fmt.Println("Next rows, next cols:", nextRows, nextCols)
+		}
 		start.Add(&start, &parts[i])
 	}
 	return start
