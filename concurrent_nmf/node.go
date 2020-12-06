@@ -44,7 +44,6 @@ type MatMessage struct {
 //		every node retrieve U/X from every node
 //		every node performs reduction
 
-// Remember butterfly pattern for all-collectives
 // Remember - sending a variable thru channel, is giving away that memory (can't use it afterwards - null pointer)
 
 // Methods like Python all method
