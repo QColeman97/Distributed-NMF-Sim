@@ -19,11 +19,6 @@ func matPrint(X mat.Matrix) {
 // xi = ith row of X, x^i = ith column of X
 
 func parallelNMF(node *Node, maxIter int) {
-	// TODO
-	// Synchronize nodes, so no node goes to next collective
-	// until all nodes are done with that collective
-	// Loop over each node & check bool checkpt vars
-
 	// Local matrices
 	var Wij, Hji mat.Dense
 
@@ -86,9 +81,9 @@ func parallelNMF(node *Node, maxIter int) {
 		// fmt.Println(node.nodeID, "updated H")
 	}
 
-	// // Send Wij & Hji to client
-	// node.clientChan <- MatMessage{Wij, node.nodeID, 0, 0, true, false}
-	// node.clientChan <- MatMessage{Hji, node.nodeID, 0, 0, false, true}
+	// Send Wij & Hji to client
+	node.clientChan <- MatMessage{Wij, node.nodeID, true, false}
+	node.clientChan <- MatMessage{Hji, node.nodeID, false, true}
 
 	wg.Done()
 }
@@ -212,45 +207,49 @@ func main() {
 		go parallelNMF(node, maxIter)
 	}
 
-	// // Wait for W & H blocks from nodes
-	// wPieces, hPieces := make([]mat.Dense, numNodes), make([]mat.Dense, numNodes)
-	// for w, h := 0, 0; w < numNodes && h < numNodes; {
-	// 	next := <-clientChan
-	// 	if next.isFinalW {
-	// 		wPieces[next.sentID] = next.mtx
-	// 		w++
-	// 	} else if next.isFinalH {
-	// 		hPieces[next.sentID] = next.mtx
-	// 		h++
-	// 	}
-	// }
+	// Wait for W & H blocks from nodes
+	wPieces, hPieces := make([]mat.Dense, numNodes), make([]mat.Dense, numNodes)
+	for w, h := 0, 0; w < numNodes && h < numNodes; {
+		next := <-clientChan
+		if next.isFinalW {
+			wPieces[next.sentID] = next.mtx
+			w++
+		} else if next.isFinalH {
+			hPieces[next.sentID] = next.mtx
+			h++
+		}
+	}
 	wg.Wait()
 
-	// // Construct full W matrix
-	// w := make([]float64, m*k)
-	// for i := 0; i < numNodes; i++ {
-	// 	for j := 0; j < smallBlockSizeW; j++ {
-	// 		for l := 0; l < k; l++ {
-	// 			w[i*j*l] = wPieces[i].At(j, l)
-	// 		}
-	// 	}
-	// }
-	// W := mat.NewDense(m, k, w)
+	// Construct full W matrix
+	w := make([]float64, m*k)
+	for i := 0; i < numNodes; i++ {
+		wPieceRows, wPieceCols := wPieces[i].Dims()
+		fmt.Println("W Piece Dims:", wPieceRows, wPieceCols)
+		for j := 0; j < smallBlockSizeW; j++ {
+			for l := 0; l < k; l++ {
+				w[i*j*l] = wPieces[i].At(j, l)
+			}
+		}
+	}
+	W := mat.NewDense(m, k, w)
 
-	// // Construct full H matrix
-	// h := make([]float64, k*n)
-	// for j := 0; j < k; j++ {
-	// 	for i := 0; i < numNodes; i++ {
-	// 		for l := 0; l < smallBlockSizeH; l++ {
-	// 			h[i*j*l] = hPieces[i].At(j, l)
-	// 		}
-	// 	}
-	// }
-	// H := mat.NewDense(k, n, h)
+	// Construct full H matrix
+	h := make([]float64, k*n)
+	for j := 0; j < k; j++ {
+		for i := 0; i < numNodes; i++ {
+			hPieceRows, hPieceCols := hPieces[i].Dims()
+			fmt.Println("H Piece Dims:", hPieceRows, hPieceCols)
+			for l := 0; l < smallBlockSizeH; l++ {
+				h[i*j*l] = hPieces[i].At(j, l)
+			}
+		}
+	}
+	H := mat.NewDense(k, n, h)
 
-	// approxA := &mat.Dense{}
-	// approxA.Mul(W, H)
-	// fmt.Println("\nA Approximation:")
-	// matPrint(approxA)
+	approxA := &mat.Dense{}
+	approxA.Mul(W, H)
+	fmt.Println("\nA Approximation:")
+	matPrint(approxA)
 	fmt.Println("Done")
 }
