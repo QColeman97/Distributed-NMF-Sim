@@ -2,3 +2,5 @@ concurrent_nmf
 sequential_kl_nmf
 sequential_mu_nmf
 gonum_example
+
+test

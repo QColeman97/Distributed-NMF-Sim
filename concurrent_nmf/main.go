@@ -51,16 +51,16 @@ func parallelNMF(node *Node, maxIter int) {
 		Uij := &mat.Dense{}
 		Uij.Mul(&Hji, Hji.T()) // k x k
 		// 4)
-		HGramMat := node.allReduce(Uij)
+		HGramMat := node.newAllReduce(Uij)
 		// fmt.Println(node.nodeID, "did allReduce")
 		// 5)
-		Hj := node.allGatherAcrossNodeColumns(&Hji, hColsPerNode) // k x (n/p_c)
+		Hj := node.newAllGatherAcrossNodeColumns(&Hji, hColsPerNode) // k x (n/p_c)
 		// fmt.Println(node.nodeID, "did allGatherCols")
 		// 6)
 		Vij := &mat.Dense{}
 		Vij.Mul(node.aPiece, Hj.T()) // (m/pr) x k
 		// 7)
-		HProductMatij := node.reduceScatterAcrossNodeRowsDummy(Vij)
+		HProductMatij := node.newReduceScatterAcrossNodeRows(Vij)
 		// fmt.Println(node.nodeID, "did reduceScatterRow")
 		// 8)
 		updateW(&Wij, HGramMat, HProductMatij)
@@ -70,30 +70,33 @@ func parallelNMF(node *Node, maxIter int) {
 		Xij := &mat.Dense{}
 		Xij.Mul(Wij.T(), &Wij) // k x k
 		// 10)
-		WGramMat := node.allReduce(Xij)
+		WGramMat := node.newAllReduce(Xij)
 		// fmt.Println(node.nodeID, "did allReduce")
 		// 11)
-		Wi := node.allGatherAcrossNodeRows(&Wij, wRowsPerNode) // (m/p_r) x k
+		Wi := node.newAllGatherAcrossNodeRows(&Wij, wRowsPerNode) // (m/p_r) x k
 		// fmt.Println(node.nodeID, "did allGatherRows")
 		// 12)
 		Yij := &mat.Dense{}
 		Yij.Mul(Wi.T(), node.aPiece) // k x (n/p_c)
 		// 13)
-		WProductMatij := node.reduceScatterAcrossNodeColumnsDummy(Yij)
+		WProductMatij := node.newReduceScatterAcrossNodeColumns(Yij)
 		// fmt.Println(node.nodeID, "did reduceScatterCols")
 		// 14)
 		updateH(&Hji, WGramMat, WProductMatij)
 		// fmt.Println(node.nodeID, "updated H")
 	}
 
-	// TODO Send Wij & Hji to client
+	// // Send Wij & Hji to client
+	// node.clientChan <- MatMessage{Wij, node.nodeID, 0, 0, true, false}
+	// node.clientChan <- MatMessage{Hji, node.nodeID, 0, 0, false, true}
+
 	wg.Done()
 }
 
 // Line 8 of MPI-FAUN
 // Multiplicative Update: W = W * ((A @ Ht) / (W @ (H @ Ht)))
 // Formula uses: Gram matrix, matrix product w/ A, and W
-func updateW(W *mat.Dense, HGramMat *mat.Dense, HProductMatij *mat.Dense) {
+func updateW(W *mat.Dense, HGramMat *mat.Dense, HProductMatij mat.Matrix) {
 	// W dims = (m/p) x k
 	// HGramMat dims = k x k
 	// HProductMatij dims = (m/p) x k
@@ -108,7 +111,7 @@ func updateW(W *mat.Dense, HGramMat *mat.Dense, HProductMatij *mat.Dense) {
 // Line 14 of MPI-FAUN
 // Multiplicative Update: H = H * ((Wt @ A) / ((Wt @ W) @ H))
 // Formula uses: Gram matrix, matrix product w/ A, and H
-func updateH(H *mat.Dense, WGramMat *mat.Dense, WProductMatij *mat.Dense) {
+func updateH(H *mat.Dense, WGramMat *mat.Dense, WProductMatij mat.Matrix) {
 	// H dims = k x (n/p)
 	// WGramMat dims = k x k
 	// WProductMatij dims = k x (n/p)
@@ -137,19 +140,30 @@ func partitionAMatrix(A *mat.Dense) []mat.Matrix {
 	return piecesOfA
 }
 
-func makeNode(chans [numNodes]chan MatMessage, id int, aPiece mat.Matrix) *Node {
+func makeNode(chans [numNodes]chan MatMessage, akChans [numNodes]chan bool, clientChan chan MatMessage, id int, aPiece mat.Matrix) *Node {
 	return &Node{
-		nodeID:    id,
-		nodeChans: chans,
-		inChan:    chans[id],
-		aPiece:    aPiece,
+		nodeID:     id,
+		nodeChans:  chans,
+		nodeAks:    akChans,
+		inChan:     chans[id],
+		aPiece:     aPiece,
+		aks:        akChans[id],
+		clientChan: clientChan,
 	}
 }
 
 func makeMatrixChans() [numNodes]chan MatMessage {
 	var chans [numNodes]chan MatMessage
 	for ch := range chans {
-		chans[ch] = make(chan MatMessage, numNodes*2) // numNodes-1)
+		chans[ch] = make(chan MatMessage, numNodes*3)
+	}
+	return chans
+}
+
+func makeAkChans() [numNodes]chan bool {
+	var chans [numNodes]chan bool
+	for ch := range chans {
+		chans[ch] = make(chan bool, numNodes*3)
 	}
 	return chans
 }
@@ -158,6 +172,11 @@ var wg sync.WaitGroup
 
 const m, n, k = 18, 12, 5
 const numNodes, nodeRows, nodeCols = 6, 3, 2
+
+const largeBlockSizeW = m / nodeRows
+const largeBlockSizeH = n / nodeCols
+const smallBlockSizeW = m / numNodes
+const smallBlockSizeH = n / numNodes
 
 func main() {
 	maxIter := 100
@@ -179,10 +198,12 @@ func main() {
 	piecesOfA := partitionAMatrix(A)
 	// Init nodes
 	chans := makeMatrixChans()
+	akChans := makeAkChans()
+	clientChan := make(chan MatMessage, numNodes*3)
 	var nodes [numNodes]*Node
 	for i := 0; i < numNodes; i++ {
 		id := i
-		nodes[i] = makeNode(chans, id, piecesOfA[i])
+		nodes[i] = makeNode(chans, akChans, clientChan, id, piecesOfA[i])
 	}
 
 	// Launch nodes with their A pieces
@@ -191,11 +212,41 @@ func main() {
 		go parallelNMF(node, maxIter)
 	}
 
-	// TODO wait for W & H blocks from nodes
-
-	// TODO construct W & H full matrices
-
+	// // Wait for W & H blocks from nodes
+	// wPieces, hPieces := make([]mat.Dense, numNodes), make([]mat.Dense, numNodes)
+	// for w, h := 0, 0; w < numNodes && h < numNodes; {
+	// 	next := <-clientChan
+	// 	if next.isFinalW {
+	// 		wPieces[next.sentID] = next.mtx
+	// 		w++
+	// 	} else if next.isFinalH {
+	// 		hPieces[next.sentID] = next.mtx
+	// 		h++
+	// 	}
+	// }
 	wg.Wait()
+
+	// // Construct full W matrix
+	// w := make([]float64, m*k)
+	// for i := 0; i < numNodes; i++ {
+	// 	for j := 0; j < smallBlockSizeW; j++ {
+	// 		for l := 0; l < k; l++ {
+	// 			w[i*j*l] = wPieces[i].At(j, l)
+	// 		}
+	// 	}
+	// }
+	// W := mat.NewDense(m, k, w)
+
+	// // Construct full H matrix
+	// h := make([]float64, k*n)
+	// for j := 0; j < k; j++ {
+	// 	for i := 0; i < numNodes; i++ {
+	// 		for l := 0; l < smallBlockSizeH; l++ {
+	// 			h[i*j*l] = hPieces[i].At(j, l)
+	// 		}
+	// 	}
+	// }
+	// H := mat.NewDense(k, n, h)
 
 	// approxA := &mat.Dense{}
 	// approxA.Mul(W, H)
