@@ -18,12 +18,13 @@ type Node struct {
 	nodeID int
 	// nodeChans     [numNodes]chan *mat.Dense // used to be mat.Matrix
 	// inChan        chan *mat.Dense
-	nodeChans [numNodes]chan MatMessage
-	nodeAks   [numNodes]chan bool
-	aks       chan bool
-	inChan    chan MatMessage
-	aPiece    mat.Matrix
-	state     int // monotonically increasing state ID - increment after each collective - for synchronization help
+	nodeChans  [numNodes]chan MatMessage
+	nodeAks    [numNodes]chan bool
+	aks        chan bool
+	inChan     chan MatMessage
+	aPiece     mat.Matrix
+	state      int // monotonically increasing state ID - increment after each collective - for synchronization help
+	clientChan chan MatMessage
 }
 
 // MatMessage - give sender information & expected action along with matrix
@@ -33,6 +34,8 @@ type MatMessage struct {
 	sentID    int
 	msgType   int
 	sentState int
+	// isFinalW  bool
+	// isFinalH  bool
 }
 
 // implement MPI collectives
