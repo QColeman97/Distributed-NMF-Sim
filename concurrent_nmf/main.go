@@ -215,7 +215,12 @@ func makeAkChans() [numNodes]chan bool {
 
 var wg sync.WaitGroup
 
-const m, n, k = 18, 12, 5
+// const m, n, k = 18, 12, 5
+// const numNodes, numNodeRows, numNodeCols = 6, 3, 2
+// const m, n, k = 20, 15, 3
+// const numNodes, numNodeRows, numNodeCols = 12, 4, 3
+
+const m, n, k = 15, 10, 3
 const numNodes, numNodeRows, numNodeCols = 6, 3, 2
 
 const largeBlockSizeW = m / numNodeRows
