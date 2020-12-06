@@ -221,8 +221,11 @@ var wg sync.WaitGroup
 // m / p_r must = p
 // n / p_c must = p
 
-const m, n, k = 18, 12, 4
-const numNodes, numNodeRows, numNodeCols = 6, 3, 2
+//const m, n, k = 16384, 8192, 400
+//const numNodes, numNodeRows, numNodeCols = 512, 32, 16
+
+const m, n, k = 2048, 1024, 400
+const numNodes, numNodeRows, numNodeCols = 128, 16, 8
 
 // const m, n, k = 16, 32, 3
 // const numNodes, numNodeRows, numNodeCols = 8, 2, 4
@@ -241,12 +244,12 @@ func main() {
 		a[i] = float64(i) // / 10 // make smaller values, overflow error?
 	}
 	A := mat.NewDense(m, n, a)
-	aRows, aCols := A.Dims()
-	fmt.Println("A dims:", aRows, aCols)
-	fmt.Println("W dims:", m, k)
-	fmt.Println("H dims:", k, n)
-	fmt.Println("\nA:")
-	matPrint(A)
+	//aRows, aCols := A.Dims()
+	//fmt.Println("A dims:", aRows, aCols)
+	//fmt.Println("W dims:", m, k)
+	//fmt.Println("H dims:", k, n)
+	//fmt.Println("\nA:")
+	//matPrint(A)
 
 	// Partition A into pieces for nodes
 	piecesOfA := partitionAMatrix(A)
@@ -320,7 +323,7 @@ func main() {
 	}
 	approxA = mat.NewDense(m, n, aA)
 	duration := time.Now().Sub(startTime)
-	fmt.Println("\nApproximation of A:")
-	matPrint(approxA)
+	//fmt.Println("\nApproximation of A:")
+	//matPrint(approxA)
 	fmt.Println("Took", duration)
 }

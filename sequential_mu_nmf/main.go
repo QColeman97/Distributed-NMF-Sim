@@ -61,7 +61,7 @@ func nmf(W *mat.Dense, H *mat.Dense, A *mat.Dense, maxIter int) {
 	}
 }
 
-const m, n, k = 18, 12, 4
+const m, n, k = 2048, 1024, 400
 
 func main() {
 	// Initialize input matrix A
@@ -70,8 +70,8 @@ func main() {
 		a[i] = float64(i)
 	}
 	A := mat.NewDense(m, n, a)
-	println("A:")
-	matPrint(A)
+	//println("A:")
+	//matPrint(A)
 
 	// Initialize factors W & H
 	w := make([]float64, m*k)
@@ -112,7 +112,7 @@ func main() {
 	}
 	approxA = mat.NewDense(m, n, aA)
 	duration := time.Now().Sub(startTime)
-	fmt.Println("\nApproximation of A:")
-	matPrint(approxA)
+	//fmt.Println("\nApproximation of A:")
+	//matPrint(approxA)
 	fmt.Println("Took", duration)
 }
