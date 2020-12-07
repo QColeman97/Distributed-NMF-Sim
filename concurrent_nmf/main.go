@@ -20,9 +20,6 @@ func matPrint(X mat.Matrix) {
 // Xi = ith row block of X, X^i = ith column block of X
 // xi = ith row of X, x^i = ith column of X
 
-const debugNode = 5
-const debugIter = 99
-
 // Corresponding MPI-FAUN steps in comments
 func parallelNMF(node *Node, maxIter int) {
 	// Local matrices
@@ -34,109 +31,44 @@ func parallelNMF(node *Node, maxIter int) {
 		h[i] = rand.NormFloat64()
 	}
 	Hji = *mat.NewDense(k, smallBlockSizeH, h)
-	// if node.nodeID == debugNode {
-	// 	fmt.Println("Initial Hji:")
-	// 	matPrint(&Hji)
-	// }
-	// Not in paper, but maybe initialize Wij too - dims = (m/p) x k
+	// Not in paper, but initialize Wij too - dims = (m/p) x k
 	w := make([]float64, smallBlockSizeW*k)
 	for i := range w {
 		w[i] = rand.NormFloat64()
 	}
 	Wij = *mat.NewDense(smallBlockSizeW, k, w)
-	// if node.nodeID == debugNode {
-	// 	fmt.Println("Initial Wij:")
-	// 	matPrint(&Wij)
-	// }
 
 	for iter := 0; iter < maxIter; iter++ {
-		// fmt.Println(node.nodeID, "ITER #", iter+1)
 		// Update W Part
 		// 3)
 		Uij := &mat.Dense{}
 		Uij.Mul(&Hji, Hji.T()) // k x k
-		// if node.nodeID == debugNode && iter == debugIter {
-		// 	fmt.Println("Uij:")
-		// 	matPrint(Uij)
-		// }
 		// 4)
 		HGramMat := node.allReduce(Uij)
-		// if node.nodeID == debugNode && iter == debugIter {
-		// 	fmt.Println("HGramMat:")
-		// 	matPrint(HGramMat)
-		// }
-		// fmt.Println(node.nodeID, "did allReduce")
 		// 5)
 		Hj := node.allGatherAcrossNodeColumns(&Hji) // k x (n/p_c)
-		// if node.nodeID == debugNode && iter == debugIter {
-		// 	fmt.Println("Hj:")
-		// 	matPrint(Hj)
-		// }
-		// fmt.Println(node.nodeID, "did allGatherCols")
 		// 6)
 		Vij := &mat.Dense{}
 		Vij.Mul(node.aPiece, Hj.T()) // (m/pr) x k
-		// if node.nodeID == debugNode && iter == debugIter {
-		// 	fmt.Println("Vij:")
-		// 	matPrint(Vij)
-		// }
 		// 7)
 		HProductMatij := node.reduceScatterAcrossNodeRows(Vij) // (m/p) x k
-		// if node.nodeID == debugNode && iter == debugIter {
-		// 	fmt.Println("HProdMatij:")
-		// 	matPrint(HProductMatij)
-		// }
-		// fmt.Println(node.nodeID, "did reduceScatterRow")
 		// 8)
 		updateW(&Wij, HGramMat, HProductMatij)
-		// if node.nodeID == debugNode && iter == debugIter {
-		// 	fmt.Println("UPDATED Wij:")
-		// 	matPrint(&Wij)
-		// }
-		// fmt.Println(node.nodeID, "updated W")
 		// Update H Part
 		// 9)
 		Xij := &mat.Dense{}
 		Xij.Mul(Wij.T(), &Wij) // k x k
-		// if node.nodeID == debugNode && iter == debugIter {
-		// 	fmt.Println("Xij:")
-		// 	matPrint(Xij)
-		// }
 		// 10)
 		WGramMat := node.allReduce(Xij)
-		// if node.nodeID == debugNode && iter == debugIter {
-		// 	fmt.Println("WGramMat:")
-		// 	matPrint(WGramMat)
-		// }
-		// fmt.Println(node.nodeID, "did allReduce")
 		// 11)
 		Wi := node.allGatherAcrossNodeRows(&Wij) // (m/p_r) x k
-		// if node.nodeID == debugNode && iter == debugIter {
-		// 	fmt.Println("Wi:")
-		// 	matPrint(Wi)
-		// }
-		// fmt.Println(node.nodeID, "did allGatherRows")
 		// 12)
 		Yij := &mat.Dense{}
 		Yij.Mul(Wi.T(), node.aPiece) // k x (n/p_c)
-		// if node.nodeID == debugNode && iter == debugIter {
-		// 	fmt.Println("Yij:")
-		// 	matPrint(Yij)
-		// }
 		// 13)
 		WProductMatji := node.reduceScatterAcrossNodeColumns(Yij) // k x (n/p)
-		// if node.nodeID == debugNode && iter == debugIter {
-		// 	fmt.Println("WProdMatji:")
-		// 	matPrint(WProductMatji)
-		// }
-		// fmt.Println(node.nodeID, "did reduceScatterCols")
 		// 14)
 		updateH(&Hji, WGramMat, WProductMatji)
-		// if node.nodeID == debugNode && iter == debugIter {
-		// 	fmt.Println("UPDATED Hji:")
-		// 	matPrint(&Hji)
-		// }
-		// fmt.Println(node.nodeID, "updated H")
 	}
 
 	// Send Wij & Hji to client
@@ -227,9 +159,6 @@ var wg sync.WaitGroup
 const m, n, k = 2048, 1024, 400
 const numNodes, numNodeRows, numNodeCols = 128, 16, 8
 
-// const m, n, k = 16, 32, 3
-// const numNodes, numNodeRows, numNodeCols = 8, 2, 4
-
 const largeBlockSizeW = m / numNodeRows
 const largeBlockSizeH = n / numNodeCols
 const smallBlockSizeW = m / numNodes
@@ -314,7 +243,7 @@ func main() {
 
 	approxA := &mat.Dense{}
 	approxA.Mul(W, H)
-	// Truncate values to no decimal
+	// Truncate values of A to no decimal for ease
 	aA := make([]float64, m*n)
 	for i := 0; i < m; i++ {
 		for j := 0; j < n; j++ {
